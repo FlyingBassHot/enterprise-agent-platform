@@ -197,6 +197,7 @@ class AgentSnapshot(BaseModel):
     timeout_seconds: int = 600
     approval_risk_levels: list[str] = Field(default_factory=lambda: ["high", "critical"])
     workflow_id: str | None = None
+    workflow_version_id: str | None = None
     required_permissions: list[str] = Field(default_factory=list)
     allowed_roles: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)

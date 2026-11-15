@@ -20,7 +20,8 @@ class PromptBinding(BaseModel):
 
 
 class ExecutionSettings(BaseModel):
-    mode: Literal["agent"] = "agent"
+    mode: Literal["agent", "workflow", "hybrid"] = "agent"
+    workflow_id: str | None = None
     max_iterations: int = Field(default=12, ge=1, le=200)
     timeout_seconds: int = Field(default=600, ge=1, le=86400)
     approval_risk_levels: list[Literal["low", "medium", "high", "critical"]] = Field(
@@ -34,17 +35,25 @@ class PermissionSettings(BaseModel):
     allowed_roles: list[str] = Field(default_factory=list)
 
 
+class RetrievalSettings(BaseModel):
+    enabled: bool = True
+    top_k: int = Field(default=5, ge=1, le=20)
+
+
 class AgentConfig(BaseModel):
     model: AgentModelBinding
     prompt: PromptBinding
     tools: list[str] = Field(default_factory=list)
+    knowledge_base_ids: list[str] = Field(default_factory=list)
+    skill_names: list[str] = Field(default_factory=list)
+    retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
     permissions: PermissionSettings = Field(default_factory=PermissionSettings)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("tools")
+    @field_validator("tools", "knowledge_base_ids", "skill_names")
     @classmethod
-    def _unique_tools(cls, value: list[str]) -> list[str]:
+    def _unique_bindings(cls, value: list[str]) -> list[str]:
         return list(dict.fromkeys(value))
 
 

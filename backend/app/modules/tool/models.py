@@ -39,6 +39,28 @@ class Tool(UUIDMixin, TimestampMixin, Base):
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
+class MCPServer(UUIDMixin, TimestampMixin, Base):
+    """Admin-managed MCP server registration.
+
+    ``env`` and ``headers`` store templates only: values must be literals or
+    ``${TOOL_SECRET_*}`` references, never resolved secrets.
+    """
+
+    __tablename__ = "mcp_servers"
+
+    name: Mapped[str] = mapped_column(String(120), unique=True, index=True, nullable=False)
+    transport: Mapped[str] = mapped_column(String(8), default="stdio", nullable=False)
+    command: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    args: Mapped[list[str]] = mapped_column(default=list, nullable=False)
+    env: Mapped[dict[str, str]] = mapped_column(default=dict, nullable=False)
+    url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    headers: Mapped[dict[str, str]] = mapped_column(default=dict, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
 class ToolVersion(UUIDMixin, Base):
     __tablename__ = "tool_versions"
     __table_args__ = (UniqueConstraint("tool_id", "version", name="uq_tool_version"),)

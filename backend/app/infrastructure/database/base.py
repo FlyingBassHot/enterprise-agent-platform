@@ -13,6 +13,7 @@ class Base(DeclarativeBase):
     type_annotation_map = {
         dict: JSON,
         dict[str, Any]: JSON,
+        dict[str, str]: JSON,
         list: JSON,
         list[Any]: JSON,
         list[str]: JSON,

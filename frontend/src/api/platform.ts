@@ -24,6 +24,18 @@ import type {
   ArtifactInfo,
   AuditRulesResponse,
   AuditReportResponse,
+  KnowledgeBaseInfo,
+  KnowledgeDocumentInfo,
+  KnowledgeDocumentChunk,
+  KnowledgeSearchResponse,
+  MCPServerInfo,
+  MCPSyncResult,
+  SkillInfo,
+  SkillVersionInfo,
+  WorkflowDefinition,
+  WorkflowInfo,
+  WorkflowValidation,
+  WorkflowVersionInfo,
   ToolCallRecord,
   UserInfo,
 } from '@/types/api'
@@ -116,7 +128,8 @@ export const toolsApi = {
 
 export const executionsApi = {
   create: (payload: {
-    agent_id: string
+    agent_id?: string
+    workflow_id?: string
     input: string
     conversation_id?: string | null
     artifact_ids?: string[]
@@ -137,6 +150,30 @@ export const executionsApi = {
     client.post<ExecutionInfo>(`/executions/${id}/resume`).then((r) => r.data),
   toolCalls: (id: string) =>
     client.get<ToolCallRecord[]>(`/executions/${id}/tool-calls`).then((r) => r.data),
+}
+
+export const workflowApi = {
+  list: () => client.get<WorkflowInfo[]>('/workflows').then((r) => r.data),
+  create: (payload: { name: string; description: string; definition: WorkflowDefinition }) =>
+    client.post<WorkflowInfo>('/workflows', payload).then((r) => r.data),
+  get: (id: string) => client.get<WorkflowInfo>(`/workflows/${id}`).then((r) => r.data),
+  update: (
+    id: string,
+    payload: { name?: string; description?: string; definition?: WorkflowDefinition },
+  ) => client.put<WorkflowInfo>(`/workflows/${id}`, payload).then((r) => r.data),
+  remove: (id: string) => client.delete(`/workflows/${id}`),
+  validate: (id: string) =>
+    client.post<WorkflowValidation>(`/workflows/${id}/validate`).then((r) => r.data),
+  publish: (id: string) =>
+    client.post<WorkflowInfo>(`/workflows/${id}/publish`).then((r) => r.data),
+  disable: (id: string) =>
+    client.post<WorkflowInfo>(`/workflows/${id}/disable`).then((r) => r.data),
+  versions: (id: string) =>
+    client.get<WorkflowVersionInfo[]>(`/workflows/${id}/versions`).then((r) => r.data),
+  execute: (
+    id: string,
+    payload: { input: string; variables?: Record<string, unknown>; metadata?: Record<string, unknown> },
+  ) => client.post<ExecutionInfo>(`/workflows/${id}/execute`, payload).then((r) => r.data),
 }
 
 export const conversationsApi = {
@@ -180,4 +217,65 @@ export const auditApi = {
     max_anomalies?: number
   }) => client.post<AuditReportResponse>('/audit/report', payload).then((r) => r.data),
   sampleUrl: '/api/v1/audit/sample-file',
+}
+
+export const knowledgeApi = {
+  listBases: () => client.get<KnowledgeBaseInfo[]>('/knowledge-bases').then((r) => r.data),
+  createBase: (payload: Record<string, unknown>) =>
+    client.post<KnowledgeBaseInfo>('/knowledge-bases', payload).then((r) => r.data),
+  getBase: (id: string) =>
+    client.get<KnowledgeBaseInfo>(`/knowledge-bases/${id}`).then((r) => r.data),
+  updateBase: (id: string, payload: Record<string, unknown>) =>
+    client.patch<KnowledgeBaseInfo>(`/knowledge-bases/${id}`, payload).then((r) => r.data),
+  removeBase: (id: string) => client.delete(`/knowledge-bases/${id}`),
+  documents: (baseId: string) =>
+    client
+      .get<KnowledgeDocumentInfo[]>(`/knowledge-bases/${baseId}/documents`)
+      .then((r) => r.data),
+  uploadDocument: (baseId: string, file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return client
+      .post<KnowledgeDocumentInfo>(`/knowledge-bases/${baseId}/documents`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      .then((r) => r.data)
+  },
+  getDocument: (id: string) =>
+    client.get<KnowledgeDocumentInfo>(`/documents/${id}`).then((r) => r.data),
+  removeDocument: (id: string) => client.delete(`/documents/${id}`),
+  reprocessDocument: (id: string) =>
+    client.post<KnowledgeDocumentInfo>(`/documents/${id}/reprocess`).then((r) => r.data),
+  chunks: (documentId: string) =>
+    client.get<KnowledgeDocumentChunk[]>(`/documents/${documentId}/chunks`).then((r) => r.data),
+  search: (
+    baseId: string,
+    payload: { query: string; top_k?: number; metadata_filter?: Record<string, unknown> },
+  ) =>
+    client
+      .post<KnowledgeSearchResponse>(`/knowledge-bases/${baseId}/search`, payload)
+      .then((r) => r.data.results),
+}
+
+export const skillsApi = {
+  list: () => client.get<SkillInfo[]>('/skills').then((r) => r.data),
+  sync: () => client.post<SkillInfo[]>('/skills/sync').then((r) => r.data),
+  get: (id: string) => client.get<SkillInfo>(`/skills/${id}`).then((r) => r.data),
+  enable: (id: string) => client.post<SkillInfo>(`/skills/${id}/enable`).then((r) => r.data),
+  disable: (id: string) => client.post<SkillInfo>(`/skills/${id}/disable`).then((r) => r.data),
+  versions: (id: string) =>
+    client.get<SkillVersionInfo[]>(`/skills/${id}/versions`).then((r) => r.data),
+}
+
+export const mcpApi = {
+  list: () => client.get<MCPServerInfo[]>('/mcp-servers').then((r) => r.data),
+  create: (payload: Record<string, unknown>) =>
+    client.post<MCPServerInfo>('/mcp-servers', payload).then((r) => r.data),
+  update: (id: string, payload: Record<string, unknown>) =>
+    client.patch<MCPServerInfo>(`/mcp-servers/${id}`, payload).then((r) => r.data),
+  remove: (id: string) => client.delete(`/mcp-servers/${id}`),
+  sync: (id: string) =>
+    client.post<MCPSyncResult>(`/mcp-servers/${id}/sync`).then((r) => r.data),
+  tools: (id: string) =>
+    client.get<ToolInfo[]>(`/mcp-servers/${id}/tools`).then((r) => r.data),
 }

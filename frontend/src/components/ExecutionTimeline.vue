@@ -2,7 +2,7 @@
 import { nextTick, reactive, ref, watch } from 'vue'
 import { ArrowRight } from '@element-plus/icons-vue'
 import JsonBlock from '@/components/JsonBlock.vue'
-import { formatDate } from '@/utils/format'
+import { formatDate, formatDuration } from '@/utils/format'
 
 type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
 
@@ -25,12 +25,16 @@ const props = withDefaults(
 const expanded = reactive(new Set<number>())
 const container = ref<HTMLElement | null>(null)
 
-const BADGES: Record<string, { label: string; type: TagType }> = {
+const BADGES: Record<string, { label: string; type: TagType; mark?: string }> = {
   execution_started: { label: '开始', type: 'primary' },
   message_delta: { label: '文本增量', type: 'info' },
   message_completed: { label: '消息完成', type: 'success' },
   tool_call_started: { label: '工具开始', type: 'warning' },
   tool_call_completed: { label: '工具完成', type: 'success' },
+  workflow_node_started: { label: '节点开始', type: 'primary', mark: '▷' },
+  workflow_node_completed: { label: '节点完成', type: 'success', mark: '✓' },
+  workflow_node_failed: { label: '节点失败', type: 'danger', mark: '✕' },
+  knowledge_retrieved: { label: '知识检索', type: 'info' },
   approval_required: { label: '待审批', type: 'warning' },
   approval_resolved: { label: '审批结果', type: 'info' },
   execution_completed: { label: '执行完成', type: 'success' },
@@ -38,8 +42,33 @@ const BADGES: Record<string, { label: string; type: TagType }> = {
   execution_cancelled: { label: '已取消', type: 'info' },
 }
 
-function badge(type: string): { label: string; type: TagType } {
+function badge(type: string): { label: string; type: TagType; mark?: string } {
   return BADGES[type] || { label: type, type: 'info' }
+}
+
+function asText(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  return String(value)
+}
+
+function nodeLabel(payload: Record<string, unknown>): string {
+  const name = asText(payload.node_name ?? payload.name)
+  const id = asText(
+    payload.node_id ?? payload.nodeId ?? payload.node_key ?? payload.key ?? payload.id,
+  )
+  return [name, id].filter(Boolean).join(' / ') || '节点'
+}
+
+function nodeType(payload: Record<string, unknown>): string {
+  return asText(payload.node_type ?? payload.nodeType ?? payload.kind ?? payload.type)
+}
+
+function nodeDuration(payload: Record<string, unknown>): string {
+  const raw = payload.duration_ms ?? payload.durationMs ?? payload.elapsed_ms
+  const value =
+    typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : Number.NaN
+  if (!Number.isFinite(value)) return ''
+  return formatDuration(value)
 }
 
 function clip(value: unknown, limit = 80): string {
@@ -71,6 +100,34 @@ function summary(event: TimelineEvent): string {
       ]
         .filter(Boolean)
         .join(' · ')
+    }
+    case 'workflow_node_started':
+      return [nodeLabel(payload), nodeType(payload), asText(payload.status) || '开始']
+        .filter(Boolean)
+        .join(' · ')
+    case 'workflow_node_completed':
+      return [
+        nodeLabel(payload),
+        nodeType(payload),
+        asText(payload.status) || 'completed',
+        nodeDuration(payload),
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    case 'workflow_node_failed':
+      return [
+        nodeLabel(payload),
+        nodeType(payload),
+        asText(payload.status) || 'failed',
+        nodeDuration(payload),
+        clip(payload.error, 100),
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    case 'knowledge_retrieved': {
+      const citations = Array.isArray(payload.citations) ? payload.citations : []
+      const count = typeof payload.count === 'number' ? payload.count : citations.length
+      return `${clip(payload.query, 60) || '知识检索'} · ${count} 条引用`
     }
     case 'approval_required':
       return `${payload.tool_name || '工具'} · 风险 ${payload.risk_level || '-'}`
@@ -113,6 +170,9 @@ watch(
       <div class="body">
         <button type="button" class="head" @click="toggle(event.seq)">
           <span class="seq mono">#{{ event.seq }}</span>
+          <span v-if="badge(event.type).mark" class="badge-mark">
+            {{ badge(event.type).mark }}
+          </span>
           <el-tag :type="badge(event.type).type" size="small" effect="light">
             {{ badge(event.type).label }}
           </el-tag>
@@ -224,6 +284,13 @@ watch(
   color: var(--app-muted);
   font-size: 11px;
   flex: 0 0 auto;
+}
+
+.badge-mark {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--app-muted);
 }
 
 .summary {

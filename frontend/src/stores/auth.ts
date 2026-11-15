@@ -33,10 +33,13 @@ export const useAuthStore = defineStore('auth', () => {
         'executions:read', 'executions:write',
         'approvals:read', 'approvals:write',
         'dashboard:read', 'audit:read',
+        'knowledge:read', 'knowledge:write', 'skills:read',
+        'workflows:read', 'workflows:write', 'workflows:publish',
       ],
       viewer: [
         'agents:read', 'prompts:read', 'models:read', 'tools:read',
         'executions:read', 'approvals:read', 'dashboard:read', 'audit:read',
+        'knowledge:read', 'skills:read', 'workflows:read',
       ],
     }
     const set = new Set<string>()

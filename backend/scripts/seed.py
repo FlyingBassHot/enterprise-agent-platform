@@ -24,6 +24,7 @@ from app.domain_plugins.audit.seed import seed_audit_demo  # noqa: E402
 from app.infrastructure.database.registry import *  # noqa: E402,F401,F403
 from app.infrastructure.database.session import get_session_factory, init_db  # noqa: E402
 from app.modules.agent.service import AgentService  # noqa: E402
+from app.modules.knowledge.service import KnowledgeService  # noqa: E402
 from app.modules.model.schemas import (  # noqa: E402
     ModelCapabilities,
     ModelConfigCreate,
@@ -33,7 +34,9 @@ from app.modules.model.schemas import (  # noqa: E402
 from app.modules.model.service import ModelService  # noqa: E402
 from app.modules.permission.service import PermissionService  # noqa: E402
 from app.modules.prompt.service import PromptService  # noqa: E402
+from app.modules.skill.service import SkillService  # noqa: E402
 from app.modules.tool.service import ToolService  # noqa: E402
+from app.modules.workflow.service import WorkflowService  # noqa: E402
 
 
 def _write_initial_password(password: str) -> Path:
@@ -129,6 +132,9 @@ async def main() -> None:
             tools,
             actor,
             model_config_id=model_config_id,
+            knowledge_service=KnowledgeService(db),
+            skill_service=SkillService(db),
+            workflow_service=WorkflowService(db),
         )
         await db.commit()
 

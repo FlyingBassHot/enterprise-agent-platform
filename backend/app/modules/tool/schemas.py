@@ -14,7 +14,7 @@ from app.core.config import get_settings
 from app.modules.tool.adapters.http import ENV_REF_PATTERN
 
 RiskLevel = Literal["low", "medium", "high", "critical"]
-ToolSource = Literal["native", "http"]
+ToolSource = Literal["native", "http", "mcp"]
 HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 BodyMode = Literal["json", "form"]
 
@@ -179,6 +179,10 @@ class ToolCreate(BaseModel):
 
     @model_validator(mode="after")
     def _check_source(self) -> ToolCreate:
+        if self.source_type == "mcp":
+            raise _invalid(
+                "MCP tools are created by MCP server sync; register an MCP server instead"
+            )
         if self.source_type == "http":
             if self.config is None:
                 raise _invalid("HTTP tools require a config")
@@ -278,3 +282,248 @@ class ToolExecutionOut(BaseModel):
     error: str | None = None
     duration_ms: int = 0
     created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# MCP servers
+# ---------------------------------------------------------------------------
+
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SECRET_ENV_KEY = re.compile(
+    r"(TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|CREDENTIAL|PRIVATE[_-]?KEY|ACCESS[_-]?KEY)",
+    re.IGNORECASE,
+)
+_HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_MAX_ENV_ENTRIES = 64
+_MAX_ARGS = 64
+_MAX_ARG_CHARS = 2000
+
+
+def _check_secret_mapping(value: dict[str, str], label: str) -> dict[str, str]:
+    """Validate literal-or-``${TOOL_SECRET_*}`` mappings for env/headers."""
+
+    if not isinstance(value, dict):
+        raise _invalid(f"{label} must be an object mapping names to strings")
+    prefix = get_settings().tool_secret_env_prefix
+    cleaned: dict[str, str] = {}
+    for raw_name, raw_value in value.items():
+        name = (raw_name or "").strip()
+        if not name:
+            raise _invalid(f"{label} names must be non-empty strings")
+        if not isinstance(raw_value, str):
+            raise _invalid(f"{label} values must be strings")
+        if "\n" in raw_value or "\r" in raw_value:
+            raise _invalid(f"{label} {name} must not contain newlines")
+        if "\x00" in raw_value:
+            raise _invalid(f"{label} {name} must not contain NUL bytes")
+        if label == "env" and not _ENV_NAME.match(name):
+            raise _invalid(
+                f"env name {name!r} must match {_ENV_NAME.pattern}"
+            )
+        if label == "headers" and not _HEADER_NAME.match(name):
+            raise _invalid(f"header name {name!r} is not a valid HTTP header name")
+        refs = ENV_REF_PATTERN.findall(raw_value)
+        for ref in refs:
+            if not ref.startswith(prefix):
+                raise _invalid(
+                    f"{label} {name} references {ref}; environment refs must start with "
+                    f"{prefix}"
+                )
+        literal = ENV_REF_PATTERN.sub("", raw_value).strip()
+        if literal and any(pattern.match(literal) for pattern in _SECRET_LIKE):
+            raise _invalid(
+                f"{label} {name} looks like a literal secret; use a ${{{prefix}...}} reference"
+            )
+        if not refs:
+            if label == "headers" and name.lower() in SENSITIVE_HEADERS:
+                raise _invalid(
+                    f"header {name} must reference an environment variable, e.g. "
+                    f"${{{prefix}{name.upper().replace('-', '_')}}}"
+                )
+            if label == "env" and _SECRET_ENV_KEY.search(name):
+                raise _invalid(
+                    f"env {name} must reference an environment variable, e.g. "
+                    f"${{{prefix}{name.upper()}}}"
+                )
+        cleaned[name] = raw_value
+    if len(cleaned) > _MAX_ENV_ENTRIES:
+        raise _invalid(f"{label} may contain at most {_MAX_ENV_ENTRIES} entries")
+    return cleaned
+
+
+def _check_args(value: list[str]) -> list[str]:
+    if len(value) > _MAX_ARGS:
+        raise _invalid(f"args may contain at most {_MAX_ARGS} entries")
+    cleaned: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise _invalid("args entries must be strings")
+        if "\x00" in item:
+            raise _invalid("args entries must not contain NUL bytes")
+        if len(item) > _MAX_ARG_CHARS:
+            raise _invalid(f"args entries may be at most {_MAX_ARG_CHARS} characters")
+        cleaned.append(item)
+    return cleaned
+
+
+def _check_mcp_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        raise _invalid("url must not be empty")
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError as exc:
+        raise _invalid("url is not a valid absolute URL") from exc
+    if parts.scheme not in {"http", "https"}:
+        raise _invalid("url must use the http or https scheme")
+    if not parts.hostname:
+        raise _invalid("url must include a host")
+    if parts.username or parts.password:
+        raise _invalid("url must not embed credentials; use ${TOOL_SECRET_*} headers")
+    if port is not None and not (0 < port < 65536):
+        raise _invalid("url port is out of range")
+    return value
+
+
+class MCPServerBase(BaseModel):
+    """Transport-neutral MCP server configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    transport: Literal["stdio", "http"] = "stdio"
+    command: str | None = Field(default=None, max_length=500)
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    url: str | None = Field(default=None, max_length=2000)
+    headers: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = True
+
+    @field_validator("command")
+    @classmethod
+    def _command(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise _invalid("stdio transport requires a non-empty command")
+        if "\x00" in value:
+            raise _invalid("command must not contain NUL bytes")
+        return value
+
+    @field_validator("args")
+    @classmethod
+    def _args(cls, value: list[str]) -> list[str]:
+        return _check_args(value)
+
+    @field_validator("env")
+    @classmethod
+    def _env(cls, value: dict[str, str]) -> dict[str, str]:
+        return _check_secret_mapping(value, "env")
+
+    @field_validator("headers")
+    @classmethod
+    def _headers(cls, value: dict[str, str]) -> dict[str, str]:
+        return _check_secret_mapping(value, "headers")
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, value: str | None) -> str | None:
+        return _check_mcp_url(value)
+
+    @model_validator(mode="after")
+    def _check_transport(self) -> MCPServerBase:
+        if self.transport == "stdio":
+            if not self.command:
+                raise _invalid("stdio transport requires a command")
+            if self.url is not None:
+                raise _invalid("stdio transport must not set url")
+            if self.headers:
+                raise _invalid("stdio transport must not set headers")
+        else:
+            if not self.url:
+                raise _invalid("http transport requires a url")
+            if self.command is not None:
+                raise _invalid("http transport must not set command")
+            if self.args:
+                raise _invalid("http transport must not set args")
+            if self.env:
+                raise _invalid("http transport must not set env")
+        return self
+
+
+class MCPServerCreate(MCPServerBase):
+    name: str = Field(min_length=2, max_length=120, pattern=NAME_PATTERN)
+
+
+class MCPServerUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transport: Literal["stdio", "http"] | None = None
+    command: str | None = None
+    args: list[str] | None = None
+    env: dict[str, str] | None = None
+    url: str | None = None
+    headers: dict[str, str] | None = None
+    enabled: bool | None = None
+
+    @field_validator("args")
+    @classmethod
+    def _args(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else _check_args(value)
+
+    @field_validator("env")
+    @classmethod
+    def _env(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        return None if value is None else _check_secret_mapping(value, "env")
+
+    @field_validator("headers")
+    @classmethod
+    def _headers(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        return None if value is None else _check_secret_mapping(value, "headers")
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, value: str | None) -> str | None:
+        return None if value is None else _check_mcp_url(value)
+
+
+def redact_secret_mapping(values: dict[str, str] | None) -> dict[str, str]:
+    """Hide literal values; keep pure ``${...}`` references visible."""
+
+    redacted: dict[str, str] = {}
+    for name, value in (values or {}).items():
+        if ENV_REF_PATTERN.search(value) and not ENV_REF_PATTERN.sub("", value).strip():
+            redacted[name] = value
+        else:
+            redacted[name] = "***"
+    return redacted
+
+
+class MCPServerOut(BaseModel):
+    id: str
+    name: str
+    transport: str
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    url: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+    enabled: bool
+    last_sync_at: datetime | None = None
+    last_error: str | None = None
+    created_by: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MCPSyncResult(BaseModel):
+    server_id: str
+    server_name: str
+    created: int = 0
+    updated: int = 0
+    unchanged: int = 0
+    disabled: int = 0
+    tools: list[ToolOut] = Field(default_factory=list)

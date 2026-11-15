@@ -136,6 +136,8 @@ class ExecutionEventSink:
         tool_name: str,
         arguments: dict[str, Any],
         risk_level: str,
+        kind: str = "tool_call",
+        title: str | None = None,
     ) -> ApprovalHandle:
         async with self.session_factory() as db:
             repo = ExecutionRepository(db)
@@ -145,12 +147,12 @@ class ExecutionEventSink:
             approval = ApprovalRequest(
                 id=new_id(),
                 execution_id=self.execution_id,
-                kind="tool_call",
+                kind=kind,
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
                 arguments=arguments,
                 status="pending",
-                payload={"risk_level": risk_level},
+                payload={"risk_level": risk_level, "title": title},
                 requested_at=datetime.now(UTC),
             )
             await repo.create_approval(approval)

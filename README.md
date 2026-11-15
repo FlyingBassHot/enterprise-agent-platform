@@ -2,7 +2,7 @@
 
 通用企业级 Agent 基座：**Agent 配置化、能力复用、执行可控、私有化可插拔**。
 
-本仓库提供平台基础设施，而非单一业务 Agent。默认使用 SQLite、本地文件、进程内执行器与离线 Mock 模型，可替换为 PostgreSQL、MinIO、Redis Worker 与 vLLM / LiteLLM；当前实现范围为 **Phase 0–2 核心闭环 + Audit 领域验证**。
+本仓库提供平台基础设施，而非单一业务 Agent。默认使用 SQLite、本地文件、进程内执行器与离线 Mock 模型，可替换为 PostgreSQL、MinIO、Redis Worker 与 vLLM / LiteLLM；当前实现范围为 **Phase 0–4 核心闭环 + Audit 领域验证**。
 
 详细架构与阶段规划见 [`roadmap.md`](./roadmap.md)。
 
@@ -13,12 +13,13 @@
 ```mermaid
 flowchart LR
   UI[Vue 3 前端] --> API[FastAPI /api/v1]
-  API --> CP[Control Plane\nAgent / Prompt / Model / Tool / RBAC]
-  API --> RT[Runtime Plane\nLangGraph Agent Loop]
-  RT --> CAP[Capability Layer\nModel Gateway / Tool Executor / Artifacts]
+  API --> CP[Control Plane\nAgent / Prompt / Model / Tool / Skill / Knowledge / RBAC]
+  API --> RT[Runtime Plane\nAgent Loop / Workflow Executor]
+  RT --> CAP[Capability Layer\nModel Gateway / Tool Executor / MCP / RAG / Artifacts]
   CP --> DB[(SQLite / PostgreSQL)]
   RT --> DB
   CAP --> FS[Local FS / MinIO]
+  CAP --> VEC[Local Vector Index\nHash Embedding]
   RT --> SSE[SSE 事件流]
   SSE --> UI
 ```
@@ -49,8 +50,12 @@ Agent 执行链路：
 | 模型管理 | Provider / Model Config、健康检查、API Key 加密与掩码、Mock + OpenAI 兼容 |
 | Prompt | 模板版本、变量 Schema、渲染校验、预览、发布 |
 | Agent | CRUD、草稿/发布/停用、版本快照、发布前校验、工具版本固定 |
-| Tool Registry | Native / HTTP 工具、JSON Schema 校验、权限范围、风险等级、超时、脱敏、执行记录 |
-| Runtime | LangGraph 状态图、流式输出、Tool Calling、上下文构建、工具绑定校验 |
+| Tool Registry | Native / HTTP / MCP 工具、JSON Schema 校验、权限范围、风险等级、超时、脱敏、执行记录 |
+| Knowledge | 知识库/文档权限、PDF/DOCX/XLSX/TXT/MD/CSV 解析、切片、本地 Hash Embedding、混合检索、引用注入 |
+| Skill | 文件系统 SKILL.md、版本/依赖、启停、Agent 绑定、运行时指令注入 |
+| MCP | stdio / Streamable HTTP Server、工具发现与同步、管理员权限、调用超时 |
+| Workflow | 版本化 JSON 定义、Start/LLM/Agent/Tool/Knowledge/Condition/Approval/End、LangGraph 执行、审批/恢复/重试、Agent `workflow`/`hybrid` 模式 |
+| Runtime | LangGraph 状态图、流式输出、Tool Calling、RAG 引用、Skill 注入、工具绑定校验 |
 | Execution | execution_id、状态机、事件序号、SSE 断线重连、取消、失败恢复 |
 | Approval | 高风险工具人工审批、拒绝回传、批准后恢复、禁止非管理员自批 |
 | Artifacts | 文件上传/下载、类型与大小校验、会话归属校验、工具按 artifact_id 读取 |
@@ -62,7 +67,7 @@ Agent 执行链路：
 - **后端**：Python 3.12+、FastAPI、SQLAlchemy 2 async、Pydantic 2、Alembic
 - **Runtime**：LangGraph（`AsyncSqliteSaver` Checkpointer、`interrupt` / `Command` 审批恢复）
 - **前端**：Vue 3.5、TypeScript、Vite、Element Plus、Pinia、Vue Router
-- **默认基础设施**：SQLite、本地文件系统、进程内异步 Runner
+- **默认基础设施**：SQLite、本地文件系统、进程内异步 Runner、384 维 Hash Embedding + 本地向量扫描
 - **可替换**：PostgreSQL、MinIO/S3、Redis、独立 Worker、vLLM / LiteLLM、Langfuse（未接入）
 
 ---
@@ -79,7 +84,7 @@ docker compose up -d --build
 docker compose exec backend cat /data/initial_admin_password.txt
 ```
 
-打开 <http://localhost:8080>，使用 `admin` + 上述密码登录。审计演示 Agent 与样例数据会自动 seed。
+打开 <http://localhost:8080>，使用 `admin` + 上述密码登录。审计演示 Agent、审计规则知识库、Audit Skill、审计工作流与样例数据会自动 seed。
 
 如 8080 端口已被占用，在项目根目录 `.env` 中设置 `FRONTEND_PORT=8081`，再启动并访问 <http://localhost:8081>。
 
@@ -146,8 +151,11 @@ backend/
 │   │   ├── model/              # Provider / Model Config
 │   │   ├── prompt/             # Prompt 版本
 │   │   ├── agent/              # Agent 配置 / 版本 / 发布
-│   │   ├── tool/               # Tool Registry / Executor / HTTP 适配
-│   │   ├── runtime/            # LangGraph 适配层 / Checkpointer
+│   │   ├── knowledge/          # 知识库 / 解析 / 切片 / 本地向量检索
+│   │   ├── skill/              # Skill 扫描 / 版本 / 启停 / 运行时注入
+│   │   ├── workflow/           # Workflow 定义 / 版本 / 校验 / LangGraph 执行器
+│   │   ├── tool/               # Tool Registry / Executor / HTTP / MCP 适配
+│   │   ├── runtime/            # LangGraph 适配层 / Checkpointer / RAG 上下文
 │   │   └── execution/          # 执行 / 会话 / 事件 / 审批 / 附件
 │   └── domain_plugins/audit/   # 审计领域包（工具 / Prompt / 样例 / 报告）
 ├── migrations/                 # Alembic
@@ -157,8 +165,8 @@ backend/
 
 frontend/
 ├── src/api/                    # Axios API 封装
-├── src/views/                  # Dashboard / Agent / Prompt / Model / Tool /
-│                               # Workspace / Executions / Users / Audit
+├── src/views/                  # Dashboard / Agent / Knowledge / Skill / Prompt /
+│                               # Model / Tool(MCP) / Workspace / Executions / Audit
 ├── src/components/             # 通用组件与执行时间线
 └── src/composables/            # fetch + SSE（Authorization / 断线重连 / 重放）
 ```
@@ -174,6 +182,11 @@ frontend/
 - `GET/POST /prompts`、`POST /prompts/{id}/versions`
 - `GET/POST /model-providers`、`GET/POST /model-configs`
 - `GET/POST /tools`、`POST /tools/{id}/test`
+- `GET/POST /mcp-servers`、`POST /mcp-servers/{id}/sync`
+- `GET/POST /knowledge-bases`、`POST /knowledge-bases/{id}/documents`、`POST /knowledge-bases/{id}/search`
+- `GET/POST /skills`、`POST /skills/sync`、`POST /skills/{id}/enable|disable`
+- `GET/POST /workflows`、`POST /workflows/{id}/publish`、`POST /workflows/{id}/execute`
+- `POST /knowledge-bases/{id}/search`（混合检索 + Metadata Filter）
 - `POST /executions`、`GET /executions/{id}/stream`、`POST /executions/{id}/cancel|resume`
 - `GET /executions/{id}/tool-calls`、`GET /approvals`、`POST /approvals/{id}/approve|reject`
 - `POST /artifacts`、`GET /conversations/{id}/messages`
@@ -189,7 +202,8 @@ SSE 事件带单调 `seq`，支持 `Last-Event-ID` / `?after=` 重放；浏览�
 1. 登录后进入「审计演示」，下载示例 Excel。
 2. 上传文件并启动分析。
 3. Agent 调用 `analyze_transactions`，执行确定性规则，返回带行号的异常清单。
-4. 前端展示异常明细、数据质量问题、规则命中统计，并调用 `/audit/report` 生成 Markdown 报告。
+4. Runtime 从 `audit-rules` 知识库检索规则并以 `[K#]` 引用注入上下文；Skill 注入审计方法；前端展示异常明细、数据质量问题、规则命中统计与知识引用，并调用 `/audit/report` 生成 Markdown 报告。
+5. 另提供 `audit-review` 演示工作流：Agent 节点 → 条件判断 → 人工复核节点 → 结束，可在「工作流」页面执行并跳转执行详情。
 
 样例：83 笔交易，注入 11 条标注异常（另有 3 条数据质量问题）。当前规则在标注集上 **precision 1.0 / recall 1.0**。测试位于 `backend/tests/test_audit_domain.py` 与 `test_audit_tool_integration.py`。
 
@@ -208,7 +222,7 @@ npx vue-tsc --noEmit -p tsconfig.app.json
 npm run build
 ```
 
-当前结果：**64 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
+当前结果：**129 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
 
 ---
 
@@ -221,11 +235,21 @@ npm run build
 - 高风险/极高风险工具由平台策略强制审批，Agent 配置无法关闭。
 - 模型只能调用 Agent 快照中绑定的工具；工具版本在发布时固定。
 - 审计文件解析设置行/列/大小上限，并在工作线程执行。
+- Skill/MCP 管理仅管理员可写；MCP 支持 `${TOOL_SECRET_*}` 引用，stdio 命令由管理员配置。
+- Workflow 中 Agent 节点禁止自动执行高风险工具；Tool/Approval 节点用于显式人工确认。
+- 知识检索先做知识库与文档级权限过滤，再做向量/关键词打分；引用内容标记为不可信资料。
 
 ### 当前限制 / 未实现
 
-- Knowledge Base、Skill Registry、Workflow、MCP、Langfuse 未实现（Phase 3–4）。
-- 无登录限流、用户上传配额；HTTP Tool 暂无出站域名/IP allowlist。
+- Langfuse、可视化拖拽 Workflow 编辑器、并行分支/循环未实现（Phase 6 / 后续）。
+- Workflow Condition 支持简单比较表达式，不支持复杂表达式语言。
+- Workflow Agent 节点仅允许低风险工具；高风险操作应使用 Tool 节点 + Approval 节点。
+- 当前 Workflow 为单进程执行，长任务恢复/取消依赖 ExecutionService Checkpointer。
+- Knowledge 默认本地 Hash Embedding + SQLite 向量扫描；pgvector/Qdrant 适配器尚未实现。
+- MCP 仅支持 stdio / Streamable HTTP，管理员配置；未实现 OAuth 交互式授权。
+- 无登录限流、用户上传配额；HTTP Tool / MCP HTTP 尚无出站域名/IP allowlist。
+- 当前为单进程内文档处理与执行 Runner；生产建议拆 Worker。
+- Embedding 默认离线 Hash 模型，语义质量有限；生产建议切换到真实 Embedding Provider。
 - 模型 Provider 配置尚未按 Agent 快照固定；生产建议由管理员统一管理并审计变更。
 - 分布式 Worker / Redis 队列未接入；当前为单进程内 Runner。
 - 审计报告接口直接调用领域函数（带 60s 超时），不写入 `tool_executions`。

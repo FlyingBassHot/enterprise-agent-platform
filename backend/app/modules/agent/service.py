@@ -109,6 +109,13 @@ class AgentService:
         tool_versions = {
             descriptor.name: descriptor.version for descriptor in tool_descriptors
         }
+        workflow_snapshot = None
+        if config.execution.mode in {"workflow", "hybrid"}:
+            from app.modules.workflow.service import WorkflowService
+
+            workflow_snapshot = await WorkflowService(self.db).validate_agent_binding(
+                config.execution.workflow_id, actor  # type: ignore[arg-type]
+            )
         now = datetime.now(UTC)
         version_number = await self.repo.next_version_number(agent.id)
         version_id = new_id()
@@ -118,7 +125,7 @@ class AgentService:
             version_id=version_id,
             version=version_number,
             owner_id=agent.owner_id,
-            mode="agent",
+            mode=config.execution.mode,
             model={
                 "config_id": config.model.config_id,
                 "temperature": config.model.temperature,
@@ -131,13 +138,19 @@ class AgentService:
             prompt_variables=dict(config.prompt.variables),
             tool_names=list(config.tools),
             tool_versions=tool_versions,
-            skill_names=[],
-            knowledge_base_ids=[],
-            retrieval_enabled=False,
+            skill_names=list(config.skill_names),
+            knowledge_base_ids=list(config.knowledge_base_ids),
+            retrieval_enabled=bool(config.retrieval.enabled and config.knowledge_base_ids),
+            retrieval_top_k=config.retrieval.top_k,
             max_iterations=config.execution.max_iterations,
             timeout_seconds=config.execution.timeout_seconds,
             approval_risk_levels=list(config.execution.approval_risk_levels),
-            workflow_id=None,
+            workflow_id=(
+                workflow_snapshot.workflow_id if workflow_snapshot else None
+            ),
+            workflow_version_id=(
+                workflow_snapshot.version_id if workflow_snapshot else None
+            ),
             required_permissions=list(config.permissions.required_permissions),
             allowed_roles=list(config.permissions.allowed_roles),
             metadata=dict(config.metadata),
@@ -254,6 +267,45 @@ class AgentService:
                 if disabled:
                     errors.append("Tools disabled: " + ", ".join(disabled))
 
+        if config.execution.mode in {"workflow", "hybrid"}:
+            if not config.execution.workflow_id:
+                errors.append("Execution mode requires a workflow_id")
+            else:
+                try:
+                    from app.modules.workflow.service import WorkflowService
+
+                    await WorkflowService(self.db).validate_agent_binding(
+                        config.execution.workflow_id, actor
+                    )
+                except AppError as exc:
+                    errors.append(f"Workflow: {exc.message}")
+        elif config.execution.workflow_id:
+            errors.append("workflow_id is only allowed for workflow/hybrid mode")
+
+        if config.knowledge_base_ids:
+            try:
+                from app.modules.knowledge.service import KnowledgeService
+
+                await KnowledgeService(self.db).validate_bindings(
+                    config.knowledge_base_ids, actor
+                )
+            except AppError as exc:
+                errors.append(f"Knowledge: {exc.message}")
+        elif config.retrieval.enabled:
+            warnings.append(
+                "Retrieval is enabled but no knowledge base is bound; retrieval will be skipped"
+            )
+
+        if config.skill_names:
+            try:
+                from app.modules.skill.service import SkillService
+
+                await SkillService(self.db).validate_bindings(
+                    config.skill_names, actor, bound_tools=config.tools
+                )
+            except AppError as exc:
+                errors.append(f"Skills: {exc.message}")
+
         permission_service = PermissionService(self.db)
         known_permissions = {
             permission.code for permission in await permission_service.repo.list_permissions()
@@ -317,6 +369,21 @@ class AgentService:
         from app.modules.model.service import ModelService
 
         return ModelService(self.db)
+
+    def _workflow_service(self):  # noqa: ANN202
+        from app.modules.workflow.service import WorkflowService
+
+        return WorkflowService(self.db)
+
+    def _knowledge_service(self):  # noqa: ANN202
+        from app.modules.knowledge.service import KnowledgeService
+
+        return KnowledgeService(self.db)
+
+    def _skill_service(self):  # noqa: ANN202
+        from app.modules.skill.service import SkillService
+
+        return SkillService(self.db)
 
     def _prompt_service(self):  # noqa: ANN202
         from app.modules.prompt.service import PromptService

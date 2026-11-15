@@ -126,7 +126,8 @@ export interface AgentPromptBinding {
 }
 
 export interface AgentExecutionSettings {
-  mode: 'agent'
+  mode: 'agent' | 'workflow' | 'hybrid'
+  workflow_id?: string | null
   max_iterations: number
   timeout_seconds: number
   approval_risk_levels: string[]
@@ -142,6 +143,9 @@ export interface AgentConfig {
   model: AgentModelBinding
   prompt: AgentPromptBinding
   tools: string[]
+  knowledge_base_ids: string[]
+  skill_names: string[]
+  retrieval: AgentKnowledgeSettings
   execution: AgentExecutionSettings
   permissions: AgentPermissionSettings
   metadata: Record<string, unknown>
@@ -238,6 +242,8 @@ export interface ExecutionInfo {
   agent_id: string
   agent_version_id: string
   agent_version: number
+  workflow_id: string | null
+  workflow_version_id: string | null
   user_id: string
   conversation_id: string | null
   mode: string
@@ -344,4 +350,185 @@ export interface AuditReportResponse {
   markdown: string
   truncated: boolean
   summary: Record<string, unknown>
+}
+
+export interface KnowledgeBaseInfo {
+  id: string
+  name: string
+  description: string
+  owner_id: string
+  tenant_id: string
+  department_id: string | null
+  access_scope: 'public' | 'department' | 'private' | string
+  status: string
+  embedding_model: string
+  chunk_size: number
+  chunk_overlap: number
+  document_count?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface KnowledgeSearchResponse {
+  query: string
+  knowledge_base_ids: string[]
+  results: RetrievalResult[]
+}
+
+export interface KnowledgeDocumentInfo {
+  id: string
+  knowledge_base_id: string
+  owner_id: string
+  department_id: string | null
+  tenant_id: string
+  filename: string
+  content_type: string
+  size: number
+  status: string
+  version: number
+  error: string | null
+  metadata: Record<string, unknown>
+  access_scope: string
+  chunk_count?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface KnowledgeDocumentChunk {
+  id: string
+  document_id: string
+  version: number
+  chunk_index: number
+  content: string
+  char_count: number
+  metadata: Record<string, unknown>
+}
+
+export interface RetrievalResult {
+  chunk_id: string
+  document_id: string
+  document_title: string
+  knowledge_base_id: string
+  content: string
+  score: number
+  metadata: Record<string, unknown>
+}
+
+export interface SkillInfo {
+  id: string
+  name: string
+  description: string
+  version: string
+  current_version: number
+  enabled: boolean
+  source_path: string | null
+  required_tools: string[]
+  required_permissions: string[]
+  inputs: string[]
+  outputs: string[]
+  metadata: Record<string, unknown>
+  instructions?: string
+  dependencies?: Array<{ id: string; kind: string; ref: string }>
+  created_at: string
+  updated_at: string
+}
+
+export interface SkillVersionInfo {
+  id: string
+  skill_id: string
+  version: number
+  content: string
+  snapshot: Record<string, unknown>
+  created_at: string
+}
+
+export interface AgentKnowledgeSettings {
+  enabled: boolean
+  top_k: number
+}
+
+export interface MCPServerInfo {
+  id: string
+  name: string
+  transport: 'stdio' | 'http' | string
+  command: string | null
+  args: string[]
+  env: Record<string, string>
+  url: string | null
+  headers: Record<string, string>
+  enabled: boolean
+  last_sync_at: string | null
+  last_error: string | null
+  created_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface MCPSyncResult {
+  server_id: string
+  server_name: string
+  created: number
+  updated: number
+  unchanged: number
+  disabled: number
+  tools: ToolInfo[]
+}
+
+export type WorkflowNodeType =
+  | 'start'
+  | 'llm'
+  | 'agent'
+  | 'tool'
+  | 'knowledge'
+  | 'condition'
+  | 'approval'
+  | 'end'
+
+export interface WorkflowNode {
+  id: string
+  type: WorkflowNodeType
+  name: string
+  config: Record<string, unknown>
+  next: string | null
+  on_true: string | null
+  on_false: string | null
+  retry?: { max_attempts: number; backoff_seconds: number } | null
+}
+
+export interface WorkflowDefinition {
+  version: number
+  start_node: string | null
+  nodes: WorkflowNode[]
+  output: string
+}
+
+export interface WorkflowInfo {
+  id: string
+  name: string
+  description: string
+  status: string
+  owner_id: string
+  current_version: number | null
+  current_version_id: string | null
+  definition: WorkflowDefinition
+  published_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkflowVersionInfo {
+  id: string
+  workflow_id: string
+  version: number
+  definition: Record<string, unknown>
+  status: string
+  created_by: string | null
+  published_at: string | null
+  created_at: string
+}
+
+export interface WorkflowValidation {
+  valid: boolean
+  errors: string[]
+  warnings: string[]
 }

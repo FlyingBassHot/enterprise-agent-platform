@@ -518,3 +518,122 @@ async def test_approval_arguments_are_masked(checkpointer) -> None:
         event for event in sink.events if event["type"] == "approval_required"
     )
     assert required["payload"]["arguments"]["token"] == "***"
+
+
+class FakeKnowledge:
+    def __init__(self, chunks):
+        self.chunks = chunks
+        self.calls = []
+
+    async def search(
+        self,
+        *,
+        knowledge_base_ids,
+        query,
+        user,
+        top_k=5,
+        metadata_filter=None,
+    ):
+        self.calls.append(
+            {
+                "knowledge_base_ids": list(knowledge_base_ids),
+                "query": query,
+                "top_k": top_k,
+            }
+        )
+        return list(self.chunks)
+
+
+class FakeSkills:
+    def __init__(self, contexts):
+        self.contexts = contexts
+
+    async def resolve_for_agent(self, skill_names, user):
+        return [context for context in self.contexts if context.name in set(skill_names)]
+
+
+async def test_runtime_injects_knowledge_citations(checkpointer) -> None:
+    from app.core.contracts import RetrievalChunk, SkillContext
+
+    sink = FakeSink()
+    tools = FakeTools()
+    model = FakeModel([{"content": "answer with citation"}])
+    knowledge = FakeKnowledge(
+        [
+            RetrievalChunk(
+                chunk_id="chunk-1",
+                document_id="doc-1",
+                document_title="Audit Rules",
+                knowledge_base_id="kb-1",
+                content="Large payments over 100000 require review.",
+                score=0.93,
+            )
+        ]
+    )
+    skills = FakeSkills(
+        [
+            SkillContext(
+                name="audit-skill",
+                version="1.0",
+                instructions="Inspect duplicate payments first.",
+            )
+        ]
+    )
+    runtime = RuntimeService(
+        model_gateway=model,
+        tool_gateway=tools,
+        sink=sink,
+        knowledge_gateway=knowledge,
+        skill_gateway=skills,
+        checkpointer=checkpointer,
+    )
+    result = await runtime.run(
+        execution_id="exec-knowledge",
+        snapshot=make_snapshot(
+            knowledge_base_ids=["kb-1"],
+            skill_names=["audit-skill"],
+            retrieval_enabled=True,
+            retrieval_top_k=3,
+        ),
+        user=USER,
+        user_text="what is the review threshold?",
+    )
+    assert result.status == "completed"
+    assert knowledge.calls == [
+        {
+            "knowledge_base_ids": ["kb-1"],
+            "query": "what is the review threshold?",
+            "top_k": 3,
+        }
+    ]
+    system_prompt = model.calls[0]["messages"][0].content
+    assert "[K1]" in system_prompt
+    assert "untrusted reference material" in system_prompt
+    assert "Inspect duplicate payments first." in system_prompt
+    retrieved = next(
+        event for event in sink.events if event["type"] == "knowledge_retrieved"
+    )
+    assert retrieved["payload"]["citations"][0]["chunk_id"] == "chunk-1"
+    assert result.output_payload["knowledge_citations"][0]["label"] == "K1"
+
+
+async def test_runtime_skips_retrieval_when_disabled(checkpointer) -> None:
+    sink = FakeSink()
+    model = FakeModel([{"content": "plain"}])
+    knowledge = FakeKnowledge([])
+    runtime = RuntimeService(
+        model_gateway=model,
+        tool_gateway=FakeTools(),
+        sink=sink,
+        knowledge_gateway=knowledge,
+        checkpointer=checkpointer,
+    )
+    result = await runtime.run(
+        execution_id="exec-no-retrieval",
+        snapshot=make_snapshot(knowledge_base_ids=["kb-1"], retrieval_enabled=False),
+        user=USER,
+        user_text="hello",
+    )
+    assert result.status == "completed"
+    assert knowledge.calls == []
+    assert "knowledge_retrieved" not in sink.types()

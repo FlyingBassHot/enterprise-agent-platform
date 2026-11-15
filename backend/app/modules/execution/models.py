@@ -59,6 +59,8 @@ class AgentExecution(UUIDMixin, TimestampMixin, Base):
     agent_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     agent_version_id: Mapped[str] = mapped_column(String(36), default="", nullable=False)
     agent_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    workflow_id: Mapped[str | None] = mapped_column(String(36), index=True, nullable=True)
+    workflow_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     conversation_id: Mapped[str | None] = mapped_column(
         String(36),

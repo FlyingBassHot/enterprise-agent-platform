@@ -17,7 +17,9 @@ from app.core.config import get_settings
 from app.core.contracts import (
     AgentSnapshot,
     ChatMessage,
+    KnowledgeGateway,
     ModelGateway,
+    RetrievalChunk,
     SkillContext,
     SkillGateway,
     ToolGateway,
@@ -59,12 +61,14 @@ class RuntimeService:
         tool_gateway: ToolGateway,
         sink: ExecutionSink,
         skill_gateway: SkillGateway | None = None,
+        knowledge_gateway: KnowledgeGateway | None = None,
         checkpointer: Any = None,
     ) -> None:
         self.model_gateway = model_gateway
         self.tool_gateway = tool_gateway
         self.sink = sink
         self.skill_gateway = skill_gateway
+        self.knowledge_gateway = knowledge_gateway
         self._checkpointer = checkpointer
 
     async def _resolve_checkpointer(self) -> Any:
@@ -79,9 +83,8 @@ class RuntimeService:
             return []
         try:
             return await self.skill_gateway.resolve_for_agent(snapshot.skill_names, user)
-        except Exception as exc:  # noqa: BLE001 - skills are additive context
-            logger.warning("skill resolution failed: %s", exc, extra={"execution_id": None})
-            return []
+        except Exception as exc:  # noqa: BLE001 - bound skills must fail closed
+            raise RuntimeError(f"skill resolution failed: {exc}") from exc
 
     def _graph(self, snapshot: AgentSnapshot, user: UserContext, checkpointer: Any, skills: list[SkillContext]):
         return build_agent_graph(
@@ -127,12 +130,43 @@ class RuntimeService:
         variables: dict[str, Any] | None = None,
     ) -> RuntimeResult:
         skills = await self._resolve_skills(snapshot, user)
+        chunks: list[RetrievalChunk] = []
+        if snapshot.retrieval_enabled and snapshot.knowledge_base_ids and user_text.strip():
+            if self.knowledge_gateway is None:
+                return RuntimeResult(
+                    status="failed",
+                    error="knowledge retrieval is enabled but no gateway is configured",
+                )
+            chunks = await self.knowledge_gateway.search(
+                knowledge_base_ids=snapshot.knowledge_base_ids,
+                query=user_text,
+                user=user,
+                top_k=snapshot.retrieval_top_k,
+            )
+            citations = [
+                {
+                    "label": f"K{index}",
+                    "chunk_id": chunk.chunk_id,
+                    "document_id": chunk.document_id,
+                    "document_title": chunk.document_title,
+                    "knowledge_base_id": chunk.knowledge_base_id,
+                    "score": chunk.score,
+                    "content": chunk.content[:1200],
+                }
+                for index, chunk in enumerate(chunks, start=1)
+            ]
+            await self.sink.emit(
+                "knowledge_retrieved",
+                {"query": user_text, "count": len(citations), "citations": citations},
+            )
         messages = build_initial_messages(
             snapshot,
             history=history,
             user_text=user_text,
             variables=variables or {},
             skills=skills,
+            knowledge_chunks=chunks,
+            knowledge_context_chars=get_settings().knowledge_context_chars,
         )
         state: AgentState = {
             "execution_id": execution_id,
@@ -143,6 +177,17 @@ class RuntimeService:
             "final_output": None,
             "error": None,
             "usage": {},
+            "knowledge_citations": [
+                {
+                    "label": f"K{index}",
+                    "chunk_id": chunk.chunk_id,
+                    "document_id": chunk.document_id,
+                    "document_title": chunk.document_title,
+                    "knowledge_base_id": chunk.knowledge_base_id,
+                    "score": chunk.score,
+                }
+                for index, chunk in enumerate(chunks, start=1)
+            ],
         }
         checkpointer = await self._resolve_checkpointer()
         graph = self._graph(snapshot, user, checkpointer, skills)
@@ -207,6 +252,7 @@ class RuntimeService:
         output_payload = {
             "steps": state.get("steps", 0),
             "tool_calls": last_assistant.get("tool_calls") or [],
+            "knowledge_citations": state.get("knowledge_citations") or [],
         }
         if interrupts:
             approval_ids: list[str] = []

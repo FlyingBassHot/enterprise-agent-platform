@@ -46,6 +46,16 @@ class Settings(BaseSettings):
     rag_top_k: int = 5
     rag_chunk_size: int = 900
     rag_chunk_overlap: int = 120
+    embedding_provider: str = "hash"
+    embedding_model: str = "hash-384"
+    embedding_base_url: str | None = None
+    embedding_api_key: str | None = None
+    knowledge_search_mode: str = "hybrid"
+    knowledge_max_pages: int = 500
+    knowledge_max_chunks: int = 5000
+    knowledge_context_chars: int = 6000
+    skill_scan_root: str = ""
+    mcp_call_timeout_seconds: int = 60
 
     execution_max_iterations: int = 12
     execution_timeout_seconds: int = 600
