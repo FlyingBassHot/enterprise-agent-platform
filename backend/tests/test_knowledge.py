@@ -769,3 +769,25 @@ async def test_delete_base_cascades_documents_and_chunks(
 async def test_wait_for_document_service(db) -> None:
     with pytest.raises(NotFoundError):
         await KnowledgeService(db).wait_for_document("missing", timeout=0.1)
+
+
+async def test_stale_processing_version_is_ignored(client, admin, db) -> None:
+    from app.modules.knowledge.service import KnowledgeService
+
+    base = await client.post(
+        "/api/v1/knowledge-bases",
+        headers=admin,
+        json={"name": "stale-version-kb", "access_scope": "public"},
+    )
+    assert base.status_code == 201, base.text
+    upload = await client.post(
+        f"/api/v1/knowledge-bases/{base.json()['id']}/documents",
+        headers=admin,
+        files={"file": ("stale.txt", b"stale version test", "text/plain")},
+    )
+    assert upload.status_code == 201, upload.text
+    document_id = upload.json()["id"]
+    service = KnowledgeService(db)
+    await service.wait_for_document(document_id)
+    status = await service.process_document(document_id, expected_version=0)
+    assert status == "stale"

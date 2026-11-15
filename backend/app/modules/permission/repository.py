@@ -132,3 +132,25 @@ class PermissionRepository:
         from sqlalchemy import func
 
         return int(await self.db.scalar(select(func.count()).select_from(User)) or 0)
+
+    async def list_policies(self, *, enabled_only: bool = False) -> list:
+        from app.modules.permission.models import AccessPolicy
+
+        stmt = select(AccessPolicy).order_by(
+            AccessPolicy.priority.desc(), AccessPolicy.name
+        )
+        if enabled_only:
+            stmt = stmt.where(AccessPolicy.enabled.is_(True))
+        return list((await self.db.scalars(stmt)).all())
+
+    async def get_policy(self, policy_id: str):
+        from app.modules.permission.models import AccessPolicy
+
+        return await self.db.get(AccessPolicy, policy_id)
+
+    async def get_policy_by_name(self, name: str):
+        from app.modules.permission.models import AccessPolicy
+
+        return await self.db.scalar(
+            select(AccessPolicy).where(AccessPolicy.name == name)
+        )

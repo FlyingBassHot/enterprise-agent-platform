@@ -6,6 +6,7 @@ from app.api.v1.dashboard import router as dashboard_router
 from app.api.v1.workflow_execute import router as workflow_execute_router
 from app.domain_plugins.audit.router import router as audit_router
 from app.modules.agent.router import router as agent_router
+from app.modules.audit_log.router import router as audit_log_router
 from app.modules.execution.router import router as execution_router
 from app.modules.knowledge.router import router as knowledge_router
 from app.modules.model.router import router as model_router
@@ -29,6 +30,7 @@ api_router.include_router(knowledge_router)
 api_router.include_router(skill_router)
 api_router.include_router(audit_router)
 api_router.include_router(dashboard_router)
+api_router.include_router(audit_log_router)
 api_router.include_router(workflow_router)
 api_router.include_router(workflow_execute_router)
 

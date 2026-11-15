@@ -94,6 +94,12 @@ const router = createRouter({
           meta: { title: '执行详情', permission: 'executions:read' },
         },
         {
+          path: 'audit-logs',
+          name: 'audit-logs',
+          component: () => import('@/views/settings/AuditLogsView.vue'),
+          meta: { title: '审计日志', permission: 'audit:logs:read' },
+        },
+        {
           path: 'users',
           name: 'users',
           component: () => import('@/views/users/AdminView.vue'),

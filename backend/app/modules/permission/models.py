@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.database.base import Base, TimestampMixin, UUIDMixin
@@ -81,3 +81,25 @@ class ResourcePermission(UUIDMixin, TimestampMixin, Base):
     subject_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     actions: Mapped[list[str]] = mapped_column(default=list, nullable=False)
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
+class AccessPolicy(UUIDMixin, TimestampMixin, Base):
+    """Attribute-based policy evaluated before owner/grant checks.
+
+    Policies are deny-by-default only when they explicitly match; the existing
+    owner/resource-grant rules remain as the RBAC fallback.
+    """
+
+    __tablename__ = "access_policies"
+
+    name: Mapped[str] = mapped_column(String(120), unique=True, index=True, nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    effect: Mapped[str] = mapped_column(String(8), default="allow", nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    action: Mapped[str] = mapped_column(String(32), default="*", nullable=False)
+    subject_roles: Mapped[list[str]] = mapped_column(default=list, nullable=False)
+    subject_departments: Mapped[list[str]] = mapped_column(default=list, nullable=False)
+    tenant_ids: Mapped[list[str]] = mapped_column(default=list, nullable=False)
+    resource_ids: Mapped[list[str]] = mapped_column(default=list, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

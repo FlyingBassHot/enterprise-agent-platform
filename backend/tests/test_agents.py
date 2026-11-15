@@ -228,6 +228,10 @@ async def test_agent_publish_and_version_immutability(
     versions = (await client.get(f"{AGENTS}/{agent_id}/versions", headers=admin)).json()
     assert [item["version"] for item in versions] == [1, 2]
     assert versions[0]["snapshot"]["system_prompt"] == "You are a finance analyst."
+    pinned = await AgentService(db).load_version(agent_id, first_version["id"])
+    assert pinned.version == 1
+    assert pinned.model.temperature == 0.1
+    assert (await AgentService(db).load_published(agent_id)).version == 2
     assert versions[1]["snapshot"]["system_prompt"] == "You are a risk analyst."
     assert versions[1]["config"]["model"]["temperature"] == 0.7
 

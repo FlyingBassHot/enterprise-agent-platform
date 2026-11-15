@@ -1,5 +1,6 @@
 import client from './client'
 import type {
+  AccessPolicyInfo,
   AgentConfig,
   AgentInfo,
   AgentValidation,
@@ -22,6 +23,7 @@ import type {
   MessageInfo,
   ApprovalInfo,
   ArtifactInfo,
+  AuditLogInfo,
   AuditRulesResponse,
   AuditReportResponse,
   KnowledgeBaseInfo,
@@ -278,4 +280,27 @@ export const mcpApi = {
     client.post<MCPSyncResult>(`/mcp-servers/${id}/sync`).then((r) => r.data),
   tools: (id: string) =>
     client.get<ToolInfo[]>(`/mcp-servers/${id}/tools`).then((r) => r.data),
+}
+
+export const auditLogsApi = {
+  list: (params?: {
+    action?: string
+    actor_id?: string
+    resource_type?: string
+    result?: string
+    after?: string
+    before?: string
+    limit?: number
+    offset?: number
+  }) => client.get<AuditLogInfo[]>('/audit-logs', { params }).then((r) => r.data),
+  get: (id: string) => client.get<AuditLogInfo>(`/audit-logs/${id}`).then((r) => r.data),
+}
+
+export const accessPoliciesApi = {
+  list: () => client.get<AccessPolicyInfo[]>('/access-policies').then((r) => r.data),
+  create: (payload: Record<string, unknown>) =>
+    client.post<AccessPolicyInfo>('/access-policies', payload).then((r) => r.data),
+  update: (id: string, payload: Record<string, unknown>) =>
+    client.patch<AccessPolicyInfo>(`/access-policies/${id}`, payload).then((r) => r.data),
+  remove: (id: string) => client.delete(`/access-policies/${id}`),
 }

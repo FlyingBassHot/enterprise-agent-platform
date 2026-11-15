@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user, require_permission
 from app.core.contracts import UserContext
+from app.core.exceptions import AuthenticationError
+from app.core.logging import request_id_var
 from app.infrastructure.database.session import get_db
+from app.modules.audit_log.service import AuditService
 from app.modules.permission.schemas import (
+    AccessPolicyCreate,
+    AccessPolicyOut,
+    AccessPolicyUpdate,
     BootstrapRequest,
     LoginRequest,
     PermissionOut,
@@ -26,7 +32,11 @@ users_router = APIRouter(tags=["identity"])
 
 
 @auth_router.post("/bootstrap", response_model=TokenResponse)
-async def bootstrap(payload: BootstrapRequest, db: AsyncSession = Depends(get_db)):
+async def bootstrap(
+    payload: BootstrapRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     import hmac
 
     from app.core.config import get_settings
@@ -45,6 +55,17 @@ async def bootstrap(payload: BootstrapRequest, db: AsyncSession = Depends(get_db
     user = await service.bootstrap_admin(
         payload.username, payload.password, payload.display_name, payload.email
     )
+    await AuditService(db).record(
+        actor_id=user.id,
+        actor_username=user.username,
+        action="auth.bootstrap",
+        resource_type="auth",
+        resource_id=user.id,
+        result="success",
+        status_code=200,
+        ip_address=request.client.host if request.client else None,
+        request_id=request_id_var.get(),
+    )
     token, expires_in = await service.issue_token(
         await service.repo.get_user(user.id)  # type: ignore[arg-type]
     )
@@ -52,9 +73,38 @@ async def bootstrap(payload: BootstrapRequest, db: AsyncSession = Depends(get_db
 
 
 @auth_router.post("/login", response_model=TokenResponse)
-async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(
+    payload: LoginRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     service = PermissionService(db)
-    user = await service.authenticate(payload.username, payload.password)
+    ip = request.client.host if request.client else None
+    try:
+        user = await service.authenticate(payload.username, payload.password)
+    except AuthenticationError:
+        await AuditService(db).record(
+            actor_username=payload.username,
+            action="auth.login",
+            resource_type="auth",
+            result="denied",
+            status_code=401,
+            ip_address=ip,
+            request_id=request_id_var.get(),
+            details={"username": payload.username, "reason": "invalid_credentials"},
+        )
+        raise
+    await AuditService(db).record(
+        actor_id=user.id,
+        actor_username=user.username,
+        action="auth.login",
+        resource_type="auth",
+        resource_id=user.id,
+        result="success",
+        status_code=200,
+        ip_address=ip,
+        request_id=request_id_var.get(),
+    )
     token, expires_in = await service.issue_token(user)
     return TokenResponse(
         access_token=token, expires_in=expires_in, user=await service.user_out(user)
@@ -83,20 +133,20 @@ async def list_users(
 @users_router.post("/users", response_model=UserOut, status_code=201)
 async def create_user(
     payload: UserCreate,
-    _: UserContext = Depends(require_permission("users:manage")),
+    user: UserContext = Depends(require_permission("users:manage")),
     db: AsyncSession = Depends(get_db),
 ):
-    return await PermissionService(db).create_user(payload)
+    return await PermissionService(db).create_user(payload, user)
 
 
 @users_router.patch("/users/{user_id}", response_model=UserOut)
 async def update_user(
     user_id: str,
     payload: UserUpdate,
-    _: UserContext = Depends(require_permission("users:manage")),
+    actor: UserContext = Depends(require_permission("users:manage")),
     db: AsyncSession = Depends(get_db),
 ):
-    return await PermissionService(db).update_user(user_id, payload)
+    return await PermissionService(db).update_user(user_id, payload, actor)
 
 
 @users_router.get("/roles", response_model=list[RoleOut])
@@ -132,6 +182,42 @@ async def list_permissions(
     db: AsyncSession = Depends(get_db),
 ):
     return await PermissionService(db).list_permissions()
+
+
+@users_router.get("/access-policies", response_model=list[AccessPolicyOut])
+async def list_access_policies(
+    user: UserContext = Depends(require_permission("roles:manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    return await PermissionService(db).list_policies(user)
+
+
+@users_router.post("/access-policies", response_model=AccessPolicyOut, status_code=201)
+async def create_access_policy(
+    payload: AccessPolicyCreate,
+    user: UserContext = Depends(require_permission("roles:manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    return await PermissionService(db).create_policy(user, payload)
+
+
+@users_router.patch("/access-policies/{policy_id}", response_model=AccessPolicyOut)
+async def update_access_policy(
+    policy_id: str,
+    payload: AccessPolicyUpdate,
+    user: UserContext = Depends(require_permission("roles:manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    return await PermissionService(db).update_policy(user, policy_id, payload)
+
+
+@users_router.delete("/access-policies/{policy_id}", status_code=204)
+async def delete_access_policy(
+    policy_id: str,
+    user: UserContext = Depends(require_permission("roles:manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    await PermissionService(db).delete_policy(user, policy_id)
 
 
 @users_router.post("/permissions/grant", status_code=201)

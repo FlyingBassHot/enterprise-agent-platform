@@ -16,7 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.contracts import ArtifactInfo, UserContext
-from app.core.exceptions import NotFoundError, PermissionDeniedError, ValidationError
+from app.core.exceptions import (
+    NotFoundError,
+    PayloadTooLargeError,
+    PermissionDeniedError,
+    ValidationError,
+)
 from app.core.ids import new_id
 from app.infrastructure.database.session import get_session_factory
 from app.infrastructure.storage.local import LocalFileStorage, get_storage
@@ -64,6 +69,12 @@ class ArtifactService:
             if total > max_bytes:
                 raise ValidationError(f"File exceeds the {settings.max_upload_mb} MB limit")
             chunks.append(chunk)
+        current_usage = await self.repo.sum_artifact_size(actor.user_id)
+        quota_bytes = max(0, settings.user_storage_quota_mb) * 1024 * 1024
+        if quota_bytes and current_usage + total > quota_bytes:
+            raise PayloadTooLargeError(
+                f"Artifact storage quota exceeded ({settings.user_storage_quota_mb} MB)"
+            )
         data = b"".join(chunks)
 
         if conversation_id:

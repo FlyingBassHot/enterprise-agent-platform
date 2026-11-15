@@ -532,3 +532,36 @@ export interface WorkflowValidation {
   errors: string[]
   warnings: string[]
 }
+
+export interface AuditLogInfo {
+  id: string
+  occurred_at: string
+  actor_id: string | null
+  actor_username: string
+  action: string
+  resource_type: string
+  resource_id: string | null
+  result: 'success' | 'failure' | 'denied' | string
+  status_code: number | null
+  ip_address: string | null
+  request_id: string | null
+  tenant_id: string
+  details: Record<string, unknown>
+  created_at: string
+}
+
+export interface AccessPolicyInfo {
+  id: string
+  name: string
+  description: string
+  effect: 'allow' | 'deny' | string
+  resource_type: string
+  action: string
+  subject_roles: string[]
+  subject_departments: string[]
+  tenant_ids: string[]
+  resource_ids: string[]
+  priority: number
+  enabled: boolean
+  created_at: string
+}

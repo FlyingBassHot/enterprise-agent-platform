@@ -2,7 +2,7 @@
 
 通用企业级 Agent 基座：**Agent 配置化、能力复用、执行可控、私有化可插拔**。
 
-本仓库提供平台基础设施，而非单一业务 Agent。默认使用 SQLite、本地文件、进程内执行器与离线 Mock 模型，可替换为 PostgreSQL、MinIO、Redis Worker 与 vLLM / LiteLLM；当前实现范围为 **Phase 0–4 核心闭环 + Audit 领域验证**。
+本仓库提供平台基础设施，而非单一业务 Agent。默认使用 SQLite、本地文件、进程内执行器与离线 Mock 模型，可替换为 PostgreSQL、MinIO、Redis Worker 与 vLLM / LiteLLM；当前实现范围为 **Phase 0–4 核心闭环 + Phase 6 治理基线 + Audit 领域验证**。
 
 详细架构与阶段规划见 [`roadmap.md`](./roadmap.md)。
 
@@ -55,6 +55,7 @@ Agent 执行链路：
 | Skill | 文件系统 SKILL.md、版本/依赖、启停、Agent 绑定、运行时指令注入 |
 | MCP | stdio / Streamable HTTP Server、工具发现与同步、管理员权限、调用超时 |
 | Workflow | 版本化 JSON 定义、Start/LLM/Agent/Tool/Knowledge/Condition/Approval/End、LangGraph 执行、审批/恢复/重试、Agent `workflow`/`hybrid` 模式 |
+| Governance | RBAC + ABAC 策略、操作员/审批人角色、审批分离、HTTP 审计日志、登录限流、用户存储配额、SQLite+文件备份/恢复 |
 | Runtime | LangGraph 状态图、流式输出、Tool Calling、RAG 引用、Skill 注入、工具绑定校验 |
 | Execution | execution_id、状态机、事件序号、SSE 断线重连、取消、失败恢复 |
 | Approval | 高风险工具人工审批、拒绝回传、批准后恢复、禁止非管理员自批 |
@@ -154,6 +155,7 @@ backend/
 │   │   ├── knowledge/          # 知识库 / 解析 / 切片 / 本地向量检索
 │   │   ├── skill/              # Skill 扫描 / 版本 / 启停 / 运行时注入
 │   │   ├── workflow/           # Workflow 定义 / 版本 / 校验 / LangGraph 执行器
+│   │   ├── audit_log/          # 追加式 HTTP 审计日志
 │   │   ├── tool/               # Tool Registry / Executor / HTTP / MCP 适配
 │   │   ├── runtime/            # LangGraph 适配层 / Checkpointer / RAG 上下文
 │   │   └── execution/          # 执行 / 会话 / 事件 / 审批 / 附件
@@ -186,6 +188,8 @@ frontend/
 - `GET/POST /knowledge-bases`、`POST /knowledge-bases/{id}/documents`、`POST /knowledge-bases/{id}/search`
 - `GET/POST /skills`、`POST /skills/sync`、`POST /skills/{id}/enable|disable`
 - `GET/POST /workflows`、`POST /workflows/{id}/publish`、`POST /workflows/{id}/execute`
+- `GET /audit-logs`、`GET /audit-logs/{id}`（需 `audit:logs:read`）
+- `GET/POST /access-policies`、`PATCH/DELETE /access-policies/{id}`（ABAC 策略管理）
 - `POST /knowledge-bases/{id}/search`（混合检索 + Metadata Filter）
 - `POST /executions`、`GET /executions/{id}/stream`、`POST /executions/{id}/cancel|resume`
 - `GET /executions/{id}/tool-calls`、`GET /approvals`、`POST /approvals/{id}/approve|reject`
@@ -222,7 +226,7 @@ npx vue-tsc --noEmit -p tsconfig.app.json
 npm run build
 ```
 
-当前结果：**129 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
+当前结果：**167 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
 
 ---
 
@@ -236,23 +240,40 @@ npm run build
 - 模型只能调用 Agent 快照中绑定的工具；工具版本在发布时固定。
 - 审计文件解析设置行/列/大小上限，并在工作线程执行。
 - Skill/MCP 管理仅管理员可写；MCP 支持 `${TOOL_SECRET_*}` 引用，stdio 命令由管理员配置。
+- 审批采用 maker-checker：执行发起人默认不能自批（超级管理员/`approvals:override` 例外）；`approver` 角色可查看并处理他人审批。
+- 所有变更类 API 写入追加式审计日志；登录成功/失败单独记录。请求审计不保存请求体，敏感字段在服务层记录时脱敏。
+- 登录、执行创建、文件上传有滑动窗口限流；用户 Artifact 存储默认 200 MB 配额。
 - Workflow 中 Agent 节点禁止自动执行高风险工具；Tool/Approval 节点用于显式人工确认。
 - 知识检索先做知识库与文档级权限过滤，再做向量/关键词打分；引用内容标记为不可信资料。
 
 ### 当前限制 / 未实现
 
-- Langfuse、可视化拖拽 Workflow 编辑器、并行分支/循环未实现（Phase 6 / 后续）。
+- Langfuse、可视化拖拽 Workflow 编辑器、并行分支/循环、独立 Worker 未实现（后续）。
 - Workflow Condition 支持简单比较表达式，不支持复杂表达式语言。
 - Workflow Agent 节点仅允许低风险工具；高风险操作应使用 Tool 节点 + Approval 节点。
 - 当前 Workflow 为单进程执行，长任务恢复/取消依赖 ExecutionService Checkpointer。
 - Knowledge 默认本地 Hash Embedding + SQLite 向量扫描；pgvector/Qdrant 适配器尚未实现。
 - MCP 仅支持 stdio / Streamable HTTP，管理员配置；未实现 OAuth 交互式授权。
-- 无登录限流、用户上传配额；HTTP Tool / MCP HTTP 尚无出站域名/IP allowlist。
+- 限流为单进程内存实现，多 Worker/多实例需替换 Redis 限流；Knowledge 文档存储未计入用户配额。
+- ABAC 已支持按主体角色/部门/租户与资源 ID 匹配的 allow/deny 策略，deny 优先于 owner/grant；复杂条件表达式与属性来源扩展尚未实现。
+- HTTP Tool / MCP HTTP 尚无出站域名/IP allowlist。
 - 当前为单进程内文档处理与执行 Runner；生产建议拆 Worker。
 - Embedding 默认离线 Hash 模型，语义质量有限；生产建议切换到真实 Embedding Provider。
 - 模型 Provider 配置尚未按 Agent 快照固定；生产建议由管理员统一管理并审计变更。
 - 分布式 Worker / Redis 队列未接入；当前为单进程内 Runner。
 - 审计报告接口直接调用领域函数（带 60s 超时），不写入 `tool_executions`。
+
+## 运维：备份与恢复
+
+```bash
+# 在 backend/ 下执行；默认读取 APP_DATABASE_URL / APP_STORAGE_DIR
+uv run python scripts/backup.py --output ./backups/platform-$(date +%Y%m%d-%H%M%S).tar.gz
+
+# 恢复前停止服务；目标目录非空需 --force（会覆盖同名文件）
+uv run python scripts/restore.py --archive ./backups/platform-YYYYmmdd-HHMMSS.tar.gz --data-dir ./data --force
+```
+
+备份使用 SQLite online backup API，包含数据库、文件存储和带 SHA256 校验的 manifest；恢复会校验路径穿越/校验和，并使用 `.restore-incomplete` 标记保证失败不产生半恢复状态。Docker 部署可将备份输出到 `/data/backups/`，恢复时先 `docker compose stop backend`。
 
 ## License
 

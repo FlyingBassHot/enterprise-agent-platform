@@ -106,6 +106,7 @@ class ApprovalRequest(UUIDMixin, Base):
     )
     kind: Mapped[str] = mapped_column(String(32), default="tool_call", nullable=False)
     tool_call_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
+    approval_key: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
     tool_name: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     arguments: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True, nullable=False)

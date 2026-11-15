@@ -592,11 +592,17 @@ async def test_http_update_versions_and_masking(clean_db) -> None:
     updated = await tool_service.update_tool(
         created.id, ToolUpdate(description="form v2"), actor
     )
-    assert updated.current_version == 2
+    assert updated.current_version == 1
     renamed = await tool_service.update_tool(
         created.id, ToolUpdate(display_name="Form v2"), actor
     )
-    assert renamed.current_version == 2
+    assert renamed.current_version == 1
+    changed = await tool_service.update_tool(
+        created.id,
+        ToolUpdate(config={"method": "POST", "url": "https://api.example.test/form-v2", "body_mode": "form", "query": {"fixed": "yes"}}),
+        actor,
+    )
+    assert changed.current_version == 2
 
     result = await tool_service.execute(
         ToolInvocation(

@@ -116,7 +116,11 @@ class ToolService(ToolGateway):
     async def list_tools(self, actor: UserContext) -> list[ToolOut]:
         tools = await self.repo.list_tools()
         versions = await self.repo.latest_versions()
-        return [self._out(tool, versions.get(tool.id, 0)) for tool in tools]
+        redact = not actor.is_superuser
+        return [
+            self._out(tool, versions.get(tool.id, 0), redact_config=redact)
+            for tool in tools
+        ]
 
     async def get_tool(
         self, tool_id_or_name: str, actor: UserContext | None = None
@@ -254,11 +258,27 @@ class ToolService(ToolGateway):
                 mode="json"
             )
 
-        before = _canonical(self._row_snapshot(tool))
+        behavior_keys = (
+            "source_type",
+            "input_schema",
+            "output_schema",
+            "risk_level",
+            "timeout_seconds",
+            "permission_scope",
+            "requires_approval",
+            "config",
+            "sensitive_fields",
+        )
+
+        def behavior_snapshot() -> str:
+            snapshot = self._row_snapshot(tool)
+            return _canonical({key: snapshot.get(key) for key in behavior_keys})
+
+        before = behavior_snapshot()
         for key, value in data.items():
             setattr(tool, key, value)
         await self.db.flush()
-        if _canonical(self._row_snapshot(tool)) != before:
+        if behavior_snapshot() != before:
             latest = await self.repo.latest_version(tool.id)
             next_version = (latest.version if latest else 0) + 1
             if tool.source_type == ToolSourceType.HTTP.value:

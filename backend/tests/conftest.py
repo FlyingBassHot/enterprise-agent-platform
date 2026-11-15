@@ -12,6 +12,7 @@ os.environ["APP_DATABASE_URL"] = f"sqlite+aiosqlite:///{_TEST_DIR}/test.db"
 os.environ["APP_STORAGE_DIR"] = f"{_TEST_DIR}/files"
 os.environ["APP_ENV"] = "test"
 os.environ["APP_AUTO_CREATE_TABLES"] = "true"
+os.environ["APP_RATE_LIMIT_ENABLED"] = "false"
 
 from app.main import app  # noqa: E402
 

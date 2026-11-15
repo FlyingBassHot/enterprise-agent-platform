@@ -355,8 +355,76 @@ async def test_execution_owner_cannot_self_approve_non_superuser(
     )
     assert self_approval.status_code == 403, self_approval.text
 
+    await client.post(
+        f"{API}/users",
+        headers=admin,
+        json={
+            "username": "approval-approver",
+            "password": "approver-pass-123",
+            "role_names": ["approver"],
+        },
+    )
+    approver_login = await client.post(
+        f"{API}/auth/login",
+        json={"username": "approval-approver", "password": "approver-pass-123"},
+    )
+    approver = {
+        "Authorization": f"Bearer {approver_login.json()['access_token']}"
+    }
+    context = await client.get(
+        f"{API}/executions/{execution['id']}", headers=approver
+    )
+    assert context.status_code == 200, context.text
+    events = await client.get(
+        f"{API}/executions/{execution['id']}/events", headers=approver
+    )
+    assert events.status_code == 200, events.text
+
+    visible = await client.get(
+        f"{API}/approvals?status=pending&execution_id={execution['id']}",
+        headers=approver,
+    )
+    assert visible.status_code == 200
+    assert visible.json()[0]["id"] == approval["id"]
+
     approved = await client.post(
-        f"{API}/approvals/{approval['id']}/approve", headers=admin, json={}
+        f"{API}/approvals/{approval['id']}/approve", headers=approver, json={}
     )
     assert approved.status_code == 200, approved.text
+    duplicate = await client.post(
+        f"{API}/approvals/{approval['id']}/approve", headers=approver, json={}
+    )
+    assert duplicate.status_code == 409, duplicate.text
     await _wait_for_status(client, developer, execution["id"], {"completed"})
+
+
+async def test_operator_can_run_agent_without_agents_write(
+    client: AsyncClient, admin: dict[str, str], install_runtime
+) -> None:
+    await client.post(
+        f"{API}/users",
+        headers=admin,
+        json={
+            "username": "agent-operator",
+            "password": "operator-pass-123",
+            "role_names": ["operator"],
+        },
+    )
+    login = await client.post(
+        f"{API}/auth/login",
+        json={"username": "agent-operator", "password": "operator-pass-123"},
+    )
+    operator = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    model = FakeModel([{"content": "operator answer"}])
+    tools = FakeTools()
+    snapshot = make_snapshot(
+        agent_id="agent-operator", tool_names=[], system_prompt="Operator test agent"
+    )
+    install_runtime(model=model, tools=tools, snapshot=snapshot)
+    response = await client.post(
+        f"{API}/executions",
+        headers=operator,
+        json={"agent_id": "agent-operator", "input": "hello"},
+    )
+    assert response.status_code == 201, response.text
+    await _wait_for_status(client, operator, response.json()["id"], {"completed"})

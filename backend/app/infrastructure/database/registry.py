@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.modules.agent.models import Agent, AgentVersion
+from app.modules.audit_log.models import AuditLog
 from app.modules.execution.models import (
     AgentExecution,
     ApprovalRequest,
@@ -42,6 +43,7 @@ __all__ = [
     "AgentExecution",
     "AgentVersion",
     "ApprovalRequest",
+    "AuditLog",
     "Artifact",
     "Conversation",
     "Document",

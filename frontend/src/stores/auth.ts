@@ -11,6 +11,7 @@ export interface UserProfile {
   is_superuser: boolean
   department_id: string | null
   roles: string[]
+  permissions?: string[]
   created_at: string
 }
 
@@ -41,11 +42,26 @@ export const useAuthStore = defineStore('auth', () => {
         'executions:read', 'approvals:read', 'dashboard:read', 'audit:read',
         'knowledge:read', 'skills:read', 'workflows:read',
       ],
+      operator: [
+        'agents:read', 'executions:read', 'executions:write',
+        'tools:read', 'tools:execute', 'approvals:read',
+        'dashboard:read', 'audit:read', 'knowledge:read',
+        'skills:read', 'workflows:read',
+      ],
+      approver: [
+        'agents:read', 'executions:read', 'approvals:read',
+        'approvals:write', 'approvals:read_all',
+        'dashboard:read', 'audit:read',
+      ],
     }
     const set = new Set<string>()
     if (user.value?.is_superuser) set.add('*')
-    for (const role of user.value?.roles || []) {
-      for (const permission of rolePermissions[role] || []) set.add(permission)
+    for (const permission of user.value?.permissions || []) set.add(permission)
+    if (!user.value?.permissions?.length) {
+      // Legacy sessions before effective permissions were exposed.
+      for (const role of user.value?.roles || []) {
+        for (const permission of rolePermissions[role] || []) set.add(permission)
+      }
     }
     return set
   })

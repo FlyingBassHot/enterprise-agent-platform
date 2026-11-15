@@ -19,12 +19,14 @@ from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from app.core.config import get_settings
 from app.core.contracts import (
     AgentLoader,
     AgentSnapshot,
     ChatMessage,
     KnowledgeGateway,
     ModelGateway,
+    SkillGateway,
     ToolGateway,
     ToolInvocation,
     UserContext,
@@ -33,6 +35,7 @@ from app.modules.runtime.context import (
     ExecutionSink,
     LLMCallRecord,
     accumulate_usage,
+    build_system_prompt,
     mask_arguments,
     truncate_tool_output,
 )
@@ -263,6 +266,7 @@ class _WorkflowExecutor:
         model_gateway: ModelGateway,
         tool_gateway: ToolGateway,
         knowledge_gateway: KnowledgeGateway | None,
+        skill_gateway: SkillGateway | None,
         agent_loader: AgentLoader | None,
         sink: ExecutionSink,
         user: UserContext,
@@ -273,6 +277,7 @@ class _WorkflowExecutor:
         self.model_gateway = model_gateway
         self.tool_gateway = tool_gateway
         self.knowledge_gateway = knowledge_gateway
+        self.skill_gateway = skill_gateway
         self.agent_loader = agent_loader
         self.sink = sink
         self.user = user
@@ -424,19 +429,39 @@ class _WorkflowExecutor:
         config = node.config
         variables = dict(state.get("variables") or {})
         agent_id = str(config.get("agent_id") or "")
-        snapshot: AgentSnapshot = await self._with_retry(
-            node,
-            lambda: self.agent_loader.load_published(agent_id),  # type: ignore[union-attr]
-        )
+        version_id = str(config.get("agent_version_id") or "")
+        loader = self.agent_loader
+        if version_id and callable(getattr(loader, "load_version", None)):
+            snapshot: AgentSnapshot = await self._with_retry(
+                node, lambda: loader.load_version(agent_id, version_id)  # type: ignore[union-attr]
+            )
+        else:
+            snapshot = await self._with_retry(
+                node, lambda: loader.load_published(agent_id)  # type: ignore[union-attr]
+            )
+        if snapshot.required_permissions:
+            missing = [
+                code for code in snapshot.required_permissions if not self.user.has(code)
+            ]
+            if missing:
+                raise PermissionError(
+                    f"agent node {node.id} requires permissions: {', '.join(missing)}"
+                )
+        if snapshot.allowed_roles and not self.user.is_superuser:
+            if not set(snapshot.allowed_roles).intersection(self.user.roles):
+                raise PermissionError(
+                    f"agent node {node.id} role is not allowed to run the agent"
+                )
         descriptors = []
         if snapshot.tool_names:
             descriptors = await self._with_retry(
                 node, lambda: self.tool_gateway.describe(snapshot.tool_names, self.user)
             )
+        approval_levels = _APPROVAL_RISK_LEVELS | set(snapshot.approval_risk_levels)
         blocked = [
             descriptor
             for descriptor in descriptors
-            if descriptor.requires_approval or descriptor.risk_level in _APPROVAL_RISK_LEVELS
+            if descriptor.requires_approval or descriptor.risk_level in approval_levels
         ]
         if blocked:
             names = ", ".join(sorted(descriptor.name for descriptor in blocked))
@@ -444,12 +469,50 @@ class _WorkflowExecutor:
                 f"agent node {node.id} binds tools that require approval: {names}"
             )
         tools = [descriptor.to_spec() for descriptor in descriptors if descriptor.enabled]
+        descriptor_by_name = {descriptor.name: descriptor for descriptor in descriptors}
 
-        system_parts = [render_text(snapshot.system_prompt, variables)]
-        if snapshot.task_prompt:
-            system_parts.append(render_text(snapshot.task_prompt, variables))
-        system_prompt = "\n\n".join(part for part in system_parts if part.strip())
         input_text = render_text(str(config.get("input") or ""), variables)
+        skills = []
+        if snapshot.skill_names and self.skill_gateway is not None:
+            skills = await self.skill_gateway.resolve_for_agent(
+                snapshot.skill_names, self.user
+            )
+        chunks = []
+        if (
+            snapshot.retrieval_enabled
+            and snapshot.knowledge_base_ids
+            and self.knowledge_gateway is not None
+        ):
+            chunks = await self.knowledge_gateway.search(
+                knowledge_base_ids=snapshot.knowledge_base_ids,
+                query=input_text,
+                user=self.user,
+                top_k=snapshot.retrieval_top_k,
+            )
+            if chunks:
+                await self.sink.emit(
+                    "knowledge_retrieved",
+                    {
+                        "node_id": node.id,
+                        "count": len(chunks),
+                        "citations": [
+                            {
+                                "chunk_id": chunk.chunk_id,
+                                "document_id": chunk.document_id,
+                                "document_title": chunk.document_title,
+                                "score": chunk.score,
+                            }
+                            for chunk in chunks
+                        ],
+                    },
+                )
+        system_prompt = build_system_prompt(
+            snapshot,
+            variables=variables,
+            skills=skills,
+            knowledge_chunks=chunks,
+            knowledge_context_chars=get_settings().knowledge_context_chars,
+        )
         messages: list[ChatMessage] = []
         if system_prompt:
             messages.append(ChatMessage(role="system", content=system_prompt))
@@ -497,12 +560,16 @@ class _WorkflowExecutor:
                 final_text = text
                 break
             for call in assistant.tool_calls:
+                call_descriptor = descriptor_by_name.get(call.name)
                 await self.sink.emit(
                     "tool_call_started",
                     {
                         "tool_call_id": call.id,
                         "tool_name": call.name,
-                        "arguments": call.arguments,
+                        "arguments": mask_arguments(
+                            call.arguments,
+                            getattr(call_descriptor, "sensitive_fields", ()),
+                        ),
                         "node_id": node.id,
                     },
                 )
@@ -599,6 +666,7 @@ class _WorkflowExecutor:
                 risk_level=descriptor.risk_level,
                 kind="tool_call",
                 title=title,
+                approval_key=f"node:{node.id}",
             )
             if handle.created:
                 await self.sink.emit(
@@ -660,7 +728,9 @@ class _WorkflowExecutor:
             {
                 "tool_call_id": tool_call_id,
                 "tool_name": tool_name,
-                "arguments": arguments,
+                "arguments": mask_arguments(
+                    arguments, getattr(descriptor, "sensitive_fields", ())
+                ),
                 "node_id": node.id,
             },
         )
@@ -792,6 +862,7 @@ class _WorkflowExecutor:
             risk_level="high",
             kind="workflow_node",
             title=title,
+            approval_key=f"node:{node.id}",
         )
         if handle.created:
             await self.sink.emit(
@@ -965,6 +1036,7 @@ def build_workflow_graph(
     user: UserContext,
     execution_id: str,
     knowledge_gateway: KnowledgeGateway | None = None,
+    skill_gateway: SkillGateway | None = None,
     agent_loader: AgentLoader | None = None,
     checkpointer: Any = None,
 ) -> CompiledStateGraph:
@@ -976,6 +1048,7 @@ def build_workflow_graph(
         model_gateway=model_gateway,
         tool_gateway=tool_gateway,
         knowledge_gateway=knowledge_gateway,
+        skill_gateway=skill_gateway,
         agent_loader=agent_loader,
         sink=sink,
         user=user,

@@ -134,7 +134,11 @@ const status = computed(
 
 const isActive = computed(() => Boolean(execution.value) && ACTIVE_STATUSES.includes(status.value))
 
-const canDecide = computed(() => auth.has('approvals:write'))
+const canDecide = computed(() => {
+  if (!auth.has('approvals:write')) return false
+  if (auth.has('approvals:read_all') || auth.has('approvals:override')) return true
+  return Boolean(execution.value && execution.value.user_id !== auth.user?.id)
+})
 
 const canCancel = computed(() => auth.has('executions:write') && isActive.value)
 

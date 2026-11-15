@@ -235,8 +235,9 @@ def build_agent_graph(
         # Phase 1: resolve every approval before executing anything, so a
         # resumed node never replays already executed tool side effects.
         decisions: dict[str, dict[str, Any]] = {}
-        for call in pending:
+        for call_index, call in enumerate(pending):
             call_id = str(call.get("id") or "")
+            approval_key = f"step:{int(state.get('steps', 0))}:call:{call_index}"
             name = str(call.get("name") or "")
             descriptor = descriptor_map.get(name)
             # Agent configuration may add approval requirements, but platform
@@ -262,6 +263,7 @@ def build_agent_graph(
                 tool_name=name,
                 arguments=safe_arguments,
                 risk_level=descriptor.risk_level,
+                approval_key=approval_key,
             )
             if handle.created:
                 await sink.emit(
@@ -272,6 +274,7 @@ def build_agent_graph(
                         "tool_name": name,
                         "arguments": safe_arguments,
                         "risk_level": descriptor.risk_level,
+                        "approval_key": approval_key,
                     },
                 )
             raw_decision = interrupt(
@@ -281,6 +284,7 @@ def build_agent_graph(
                     "tool_call_id": call_id,
                     "arguments": safe_arguments,
                     "risk_level": descriptor.risk_level,
+                    "approval_key": approval_key,
                 }
             )
             decision = _normalize_decision(raw_decision)
@@ -363,7 +367,13 @@ def build_agent_graph(
 
             await sink.emit(
                 "tool_call_started",
-                {"tool_call_id": call_id, "tool_name": name, "arguments": arguments},
+                {
+                    "tool_call_id": call_id,
+                    "tool_name": name,
+                    "arguments": mask_arguments(
+                        arguments, getattr(descriptor, "sensitive_fields", ())
+                    ),
+                },
             )
             started = time.perf_counter()
             status = "success"

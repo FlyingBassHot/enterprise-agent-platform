@@ -57,6 +57,11 @@ class PermissionDeniedError(AppError):
     code = "permission_denied"
 
 
+class PayloadTooLargeError(AppError):
+    status_code = 413
+    code = "payload_too_large"
+
+
 class ModelError(AppError):
     status_code = 502
     code = "model_error"

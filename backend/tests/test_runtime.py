@@ -84,9 +84,14 @@ class FakeSink:
         tool_name: str,
         arguments: dict[str, Any],
         risk_level: str,
+        kind: str = "tool_call",
+        title: str | None = None,
+        approval_key: str | None = None,
     ) -> ApprovalHandle:
         for approval_id, row in self.approvals.items():
-            if row["tool_call_id"] == tool_call_id:
+            if (row.get("approval_key") or row["tool_call_id"]) == (
+                approval_key or tool_call_id
+            ):
                 return ApprovalHandle(id=approval_id, created=False)
         approval_id = f"approval-{len(self.approvals) + 1}"
         self.approvals[approval_id] = {
@@ -95,6 +100,9 @@ class FakeSink:
             "arguments": arguments,
             "risk_level": risk_level,
             "status": "pending",
+            "approval_key": approval_key,
+            "kind": kind,
+            "title": title,
         }
         return ApprovalHandle(id=approval_id, created=True)
 
@@ -519,6 +527,20 @@ async def test_approval_arguments_are_masked(checkpointer) -> None:
     )
     assert required["payload"]["arguments"]["token"] == "***"
 
+    resumed = await runtime.resume(
+        execution_id="exec-masked-approval",
+        user=USER,
+        snapshot=make_snapshot(tool_names=["wire_money"]),
+        decision={"approved": True, "comment": "ok"},
+        interrupt_id=sink.interrupt_ids[paused.approval_ids[0]],
+    )
+    assert resumed.status == "completed"
+    started = next(
+        event for event in sink.events if event["type"] == "tool_call_started"
+    )
+    assert started["payload"]["arguments"]["token"] == "***"
+    assert started["payload"]["arguments"]["amount"] == 5
+
 
 class FakeKnowledge:
     def __init__(self, chunks):
@@ -637,3 +659,70 @@ async def test_runtime_skips_retrieval_when_disabled(checkpointer) -> None:
     assert result.status == "completed"
     assert knowledge.calls == []
     assert "knowledge_retrieved" not in sink.types()
+
+
+async def test_reused_model_tool_call_id_requires_fresh_approval(checkpointer) -> None:
+    sink = FakeSink()
+    tools = FakeTools([make_tool("wire_money", "high", requires_approval=True)])
+    model = FakeModel(
+        [
+            {"tool_calls": [{"id": "call_0", "name": "wire_money", "arguments": {"amount": 1}}]},
+            {"tool_calls": [{"id": "call_0", "name": "wire_money", "arguments": {"amount": 2}}]},
+            {"content": "finished"},
+        ]
+    )
+    runtime = RuntimeService(
+        model_gateway=model, tool_gateway=tools, sink=sink, checkpointer=checkpointer
+    )
+    first = await runtime.run(
+        execution_id="exec-reused-id",
+        snapshot=make_snapshot(tool_names=["wire_money"]),
+        user=USER,
+        user_text="pay twice",
+    )
+    assert first.status == "waiting_approval"
+    first_approval = first.approval_ids[0]
+    second = await runtime.resume(
+        execution_id="exec-reused-id",
+        user=USER,
+        snapshot=make_snapshot(tool_names=["wire_money"]),
+        decision={"approved": True, "comment": "first"},
+        interrupt_id=sink.interrupt_ids[first_approval],
+    )
+    assert second.status == "waiting_approval"
+    assert len(sink.approvals) == 2
+    second_approval = next(
+        approval_id for approval_id in sink.approvals if approval_id != first_approval
+    )
+    assert sink.approvals[second_approval]["approval_key"] != sink.approvals[first_approval]["approval_key"]
+    assert len(tools.invocations) == 1
+    done = await runtime.resume(
+        execution_id="exec-reused-id",
+        user=USER,
+        snapshot=make_snapshot(tool_names=["wire_money"]),
+        decision={"approved": True, "comment": "second"},
+        interrupt_id=sink.interrupt_ids[second_approval],
+    )
+    assert done.status == "completed"
+    assert len(tools.invocations) == 2
+
+
+async def test_literal_braces_in_prompt_do_not_crash(checkpointer) -> None:
+    sink = FakeSink()
+    model = FakeModel([{"content": "ok"}])
+    runtime = RuntimeService(
+        model_gateway=model,
+        tool_gateway=FakeTools(),
+        sink=sink,
+        checkpointer=checkpointer,
+    )
+    result = await runtime.run(
+        execution_id="exec-literal-braces",
+        snapshot=make_snapshot(
+            system_prompt='Return JSON exactly: {"a.b": 1, "n": 2}'
+        ),
+        user=USER,
+        user_text="format it",
+    )
+    assert result.status == "completed"
+    assert '{"a.b": 1, "n": 2}' in model.calls[0]["messages"][0].content

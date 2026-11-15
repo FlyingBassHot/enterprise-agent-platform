@@ -85,7 +85,11 @@ const canResume = computed(
     pendingApprovals.value.length === 0,
 )
 
-const canApprove = computed(() => auth.has('approvals:write'))
+const canApprove = computed(() => {
+  if (!auth.has('approvals:write')) return false
+  if (auth.has('approvals:read_all') || auth.has('approvals:override')) return true
+  return Boolean(detail.value && detail.value.user_id !== auth.user?.id)
+})
 
 const agentName = computed(() => {
   if (!detail.value) return '-'

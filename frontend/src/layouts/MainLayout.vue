@@ -12,6 +12,7 @@ import {
   Reading,
   Setting,
   Share,
+  Tickets,
   SwitchButton,
   Tools,
   User,
@@ -35,6 +36,7 @@ const menuItems = computed(() => [
   { path: '/tools', label: '工具管理', icon: Tools, permission: 'tools:read' },
   { path: '/executions', label: '执行中心', icon: DataAnalysis, permission: 'executions:read' },
   { path: '/audit', label: '审计演示', icon: Setting, permission: 'audit:read' },
+  { path: '/audit-logs', label: '审计日志', icon: Tickets, permission: 'audit:logs:read' },
   { path: '/users', label: '用户与角色', icon: User, permission: 'users:manage' },
 ].filter((item) => auth.has(item.permission)))
 

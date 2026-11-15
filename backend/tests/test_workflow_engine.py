@@ -109,9 +109,12 @@ class FakeSink:
         risk_level: str,
         kind: str = "tool_call",
         title: str | None = None,
+        approval_key: str | None = None,
     ) -> ApprovalHandle:
         for approval_id, row in self.approvals.items():
-            if row["tool_call_id"] == tool_call_id:
+            if (row.get("approval_key") or row["tool_call_id"]) == (
+                approval_key or tool_call_id
+            ):
                 return ApprovalHandle(id=approval_id, created=False)
         approval_id = f"approval-{len(self.approvals) + 1}"
         self.approvals[approval_id] = {
@@ -121,6 +124,7 @@ class FakeSink:
             "risk_level": risk_level,
             "kind": kind,
             "title": title,
+            "approval_key": approval_key,
             "status": "pending",
         }
         return ApprovalHandle(id=approval_id, created=True)
@@ -835,3 +839,15 @@ async def test_cancellation_propagates(checkpointer) -> None:
             snapshot=make_snapshot(definition),
             user=USER,
         )
+
+
+async def test_agent_node_enforces_agent_required_permissions(checkpointer) -> None:
+    loader = FakeLoader(make_agent(required_permissions=["restricted:read"]))
+    runtime = make_runtime(loader=loader, sink=FakeSink(), checkpointer=checkpointer)
+    result = await runtime.run(
+        execution_id="exec-agent-denied",
+        snapshot=make_snapshot(_agent_definition()),
+        user=USER,
+    )
+    assert result.status == "failed"
+    assert "requires permissions" in (result.error or "")

@@ -191,6 +191,13 @@ class AgentService:
 
     # ------------------------------------------------------------------- loader
 
+    async def load_version(self, agent_id: str, version_id: str) -> AgentSnapshot:
+        agent = await self._get_agent_or_404(agent_id)
+        version = await self.repo.get_version(version_id)
+        if version is None or version.agent_id != agent.id:
+            raise NotFoundError("Agent version not found")
+        return AgentSnapshot.model_validate(version.snapshot)
+
     async def load_published(self, agent_id: str) -> AgentSnapshot:
         agent = await self._get_agent_or_404(agent_id)
         if agent.status != "published":

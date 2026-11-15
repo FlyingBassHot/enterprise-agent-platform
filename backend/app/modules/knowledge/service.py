@@ -51,6 +51,11 @@ logger = get_logger(__name__)
 _ACCESS_SCOPES = {"public", "department", "private"}
 _TERMINAL_STATUSES = {"ready", "failed", "deleted"}
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
+_DOCUMENT_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _document_lock(document_id: str) -> asyncio.Lock:
+    return _DOCUMENT_LOCKS.setdefault(document_id, asyncio.Lock())
 
 
 def _parse_metadata(raw: str | dict[str, Any] | None) -> dict[str, Any]:
@@ -424,7 +429,7 @@ class KnowledgeService(KnowledgeGateway):
             await self.db.rollback()
             await self._delete_storage(storage_key)
             raise
-        self._schedule_processing(document_id)
+        self._schedule_processing(document_id, 1)
         return self._document_out(document)
 
     async def list_documents(
@@ -461,37 +466,38 @@ class KnowledgeService(KnowledgeGateway):
 
     async def reprocess_document(self, actor: UserContext, document_id: str) -> DocumentOut:
         document, _ = await self._require_document_write(actor, document_id)
-        try:
-            data = await self.storage.get(document.storage_key)
-        except FileNotFoundError as exc:
-            raise KnowledgeError("Stored document file is missing") from exc
-        version_number = document.version + 1
-        suffix = PurePosixPath(document.filename).suffix.lower() or ".txt"
-        storage_key = f"knowledge/{document.id}/{version_number}{suffix}"
-        await self.storage.put(storage_key, data, document.content_type)
-        await self.repo.delete_chunks(document.id)
-        version = DocumentVersion(
-            id=new_id(),
-            document_id=document.id,
-            version=version_number,
-            storage_key=storage_key,
-            size=len(data),
-            checksum=hashlib.sha256(data).hexdigest(),
-            created_by=actor.user_id,
-        )
-        document.version = version_number
-        document.storage_key = storage_key
-        document.status = "pending"
-        document.error = ""
-        self.db.add(version)
-        try:
-            await self.db.commit()
-        except Exception:
-            await self.db.rollback()
-            await self._delete_storage(storage_key)
-            raise
-        self._schedule_processing(document.id)
-        return self._document_out(document)
+        async with _document_lock(document.id):
+            try:
+                data = await self.storage.get(document.storage_key)
+            except FileNotFoundError as exc:
+                raise KnowledgeError("Stored document file is missing") from exc
+            version_number = document.version + 1
+            suffix = PurePosixPath(document.filename).suffix.lower() or ".txt"
+            storage_key = f"knowledge/{document.id}/{version_number}{suffix}"
+            await self.storage.put(storage_key, data, document.content_type)
+            await self.repo.delete_chunks(document.id)
+            version = DocumentVersion(
+                id=new_id(),
+                document_id=document.id,
+                version=version_number,
+                storage_key=storage_key,
+                size=len(data),
+                checksum=hashlib.sha256(data).hexdigest(),
+                created_by=actor.user_id,
+            )
+            document.version = version_number
+            document.storage_key = storage_key
+            document.status = "pending"
+            document.error = ""
+            self.db.add(version)
+            try:
+                await self.db.commit()
+            except Exception:
+                await self.db.rollback()
+                await self._delete_storage(storage_key)
+                raise
+            self._schedule_processing(document.id, version_number)
+            return self._document_out(document)
 
     async def list_chunks(self, actor: UserContext, document_id: str) -> list[ChunkOut]:
         document, _ = await self._require_document_read(actor, document_id)
@@ -500,19 +506,30 @@ class KnowledgeService(KnowledgeGateway):
 
     # ------------------------------------------------------------------ processing
 
-    def _schedule_processing(self, document_id: str) -> None:
-        task = asyncio.create_task(_run_processing(document_id))
+    def _schedule_processing(self, document_id: str, version: int) -> None:
+        task = asyncio.create_task(_run_processing(document_id, version))
         _BACKGROUND_TASKS.add(task)
         task.add_done_callback(_BACKGROUND_TASKS.discard)
 
-    async def process_document(self, document_id: str) -> str:
+    async def process_document(
+        self, document_id: str, expected_version: int | None = None
+    ) -> str:
         """Parse, chunk and embed a document, returning the final status."""
+        async with _document_lock(document_id):
+            document = await self.repo.get_document(document_id)
+            if document is None or document.status == "deleted":
+                return "missing"
+            if expected_version is not None and document.version != expected_version:
+                return "stale"
+            document.status = "processing"
+            document.error = ""
+            await self.db.commit()
+            return await self._process_locked(document_id)
+
+    async def _process_locked(self, document_id: str) -> str:
         document = await self.repo.get_document(document_id)
-        if document is None or document.status == "deleted":
+        if document is None:
             return "missing"
-        document.status = "processing"
-        document.error = ""
-        await self.db.commit()
         try:
             data = await self.storage.get(document.storage_key)
             base = await self.repo.get_base(document.knowledge_base_id)
@@ -692,6 +709,6 @@ class KnowledgeService(KnowledgeGateway):
         return [await self._base_out(by_id[base_id]) for base_id in base_ids]
 
 
-async def _run_processing(document_id: str) -> None:
+async def _run_processing(document_id: str, version: int) -> None:
     async with get_session_factory()() as session:
-        await KnowledgeService(session).process_document(document_id)
+        await KnowledgeService(session).process_document(document_id, version)

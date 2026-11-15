@@ -38,6 +38,19 @@ PROVIDERS: dict[str, type[BaseModelProvider]] = {
 }
 
 
+def _mask_extra(value):
+    if isinstance(value, dict):
+        return {
+            key: "***"
+            if any(part in key.lower() for part in ("token", "key", "secret", "password"))
+            else _mask_extra(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_mask_extra(item) for item in value]
+    return value
+
+
 class ModelService(ModelGateway):
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -164,7 +177,7 @@ class ModelService(ModelGateway):
             description=provider.description,
             has_api_key=bool(provider.api_key_encrypted),
             masked_api_key="********" if provider.api_key_encrypted else "",
-            extra=provider.extra or {},
+            extra=_mask_extra(provider.extra or {}),
             created_at=provider.created_at,
         )
 
@@ -240,7 +253,7 @@ class ModelService(ModelGateway):
             enabled=config.enabled,
             is_default=config.is_default,
             description=config.description,
-            extra=config.extra or {},
+            extra=_mask_extra(config.extra or {}),
             created_at=config.created_at,
         )
 

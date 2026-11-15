@@ -17,6 +17,7 @@ from app.core.contracts import (
     AgentLoader,
     KnowledgeGateway,
     ModelGateway,
+    SkillGateway,
     ToolGateway,
     UserContext,
 )
@@ -41,6 +42,7 @@ class WorkflowRuntime:
         model_gateway: ModelGateway,
         tool_gateway: ToolGateway,
         knowledge_gateway: KnowledgeGateway | None = None,
+        skill_gateway: SkillGateway | None = None,
         agent_loader: AgentLoader | None = None,
         sink: ExecutionSink,
         checkpointer: Any = None,
@@ -48,6 +50,7 @@ class WorkflowRuntime:
         self.model_gateway = model_gateway
         self.tool_gateway = tool_gateway
         self.knowledge_gateway = knowledge_gateway
+        self.skill_gateway = skill_gateway
         self.agent_loader = agent_loader
         self.sink = sink
         self._checkpointer = checkpointer
@@ -91,6 +94,7 @@ class WorkflowRuntime:
                 model_gateway=self.model_gateway,
                 tool_gateway=self.tool_gateway,
                 knowledge_gateway=self.knowledge_gateway,
+                skill_gateway=self.skill_gateway,
                 agent_loader=self.agent_loader,
                 sink=self.sink,
                 user=user,
@@ -130,6 +134,7 @@ class WorkflowRuntime:
                 model_gateway=self.model_gateway,
                 tool_gateway=self.tool_gateway,
                 knowledge_gateway=self.knowledge_gateway,
+                skill_gateway=self.skill_gateway,
                 agent_loader=self.agent_loader,
                 sink=self.sink,
                 user=user,

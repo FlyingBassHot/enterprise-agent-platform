@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
@@ -33,7 +34,7 @@ from app.core.ids import new_id
 from app.core.logging import get_logger, request_id_var
 from app.infrastructure.database.session import get_session_factory
 from app.modules.execution.events import ExecutionEventBroker, ExecutionEventSink, get_broker
-from app.modules.execution.models import AgentExecution
+from app.modules.execution.models import AgentExecution, ApprovalRequest
 from app.modules.execution.repository import ExecutionRepository
 from app.modules.execution.schemas import (
     ApprovalOut,
@@ -53,6 +54,11 @@ from app.modules.runtime.service import RuntimeResult, RuntimeService
 logger = get_logger(__name__)
 
 _TASKS: dict[str, asyncio.Task[Any]] = {}
+_EXECUTION_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _execution_lock(execution_id: str) -> asyncio.Lock:
+    return _EXECUTION_LOCKS.setdefault(execution_id, asyncio.Lock())
 
 
 def _now() -> datetime:
@@ -112,6 +118,8 @@ class ExecutionService:
 
     async def _require_execution_read(self, actor: UserContext, execution: AgentExecution) -> None:
         if actor.is_superuser or execution.user_id == actor.user_id:
+            return
+        if actor.has("approvals:read_all"):
             return
         await PermissionService(self.db).require_resource_access(
             actor,
@@ -262,7 +270,6 @@ class ExecutionService:
         snapshot: AgentSnapshot | None = None
         workflow_snapshot = None
         if payload.agent_id:
-            self._require(actor, "agents:write")
             loader = self._agent_loader
             if loader is None:
                 loader = _agent_service(self.db)
@@ -423,6 +430,12 @@ class ExecutionService:
     # --------------------------------------------------------------- cancel/resume
 
     async def cancel(self, actor: UserContext, execution_id: str) -> ExecutionOut:
+        async with _execution_lock(execution_id):
+            return await self._cancel_locked(actor, execution_id)
+
+    async def _cancel_locked(
+        self, actor: UserContext, execution_id: str
+    ) -> ExecutionOut:
         self._require(actor, "executions:write")
         execution = await self._load_execution(execution_id)
         await self._require_execution_write(actor, execution)
@@ -510,10 +523,11 @@ class ExecutionService:
         limit: int = 200,
     ) -> list[ApprovalOut]:
         self._require(actor, "approvals:read")
+        can_read_all = actor.is_superuser or actor.has("approvals:read_all")
         rows = await self.repo.list_approvals(
             execution_id=execution_id,
             status=status,
-            owner_id=None if actor.is_superuser else actor.user_id,
+            owner_id=None if can_read_all else actor.user_id,
             limit=limit,
         )
         return [ApprovalOut.model_validate(row) for row in rows]
@@ -534,11 +548,13 @@ class ExecutionService:
             raise ConflictError(f"Approval is already {approval.status}")
 
         execution = await self._load_execution(approval.execution_id)
-        if execution.user_id == actor.user_id and not actor.is_superuser:
+        can_read_all = actor.is_superuser or actor.has("approvals:read_all")
+        can_override = actor.is_superuser or actor.has("approvals:override")
+        if execution.user_id == actor.user_id and not can_override:
             raise PermissionDeniedError(
                 "Self-approval is not allowed; another approver must decide"
             )
-        if not (actor.is_superuser or execution.user_id == actor.user_id):
+        if not (can_read_all or execution.user_id == actor.user_id):
             await PermissionService(self.db).require_resource_access(
                 actor,
                 resource_type="execution",
@@ -547,11 +563,29 @@ class ExecutionService:
                 owner_id=execution.user_id,
             )
 
-        approval.status = "approved" if approved else "rejected"
-        approval.resolved_at = _now()
+        resolved_at = _now()
+        status = "approved" if approved else "rejected"
+        result = await self.db.execute(
+            update(ApprovalRequest)
+            .where(
+                ApprovalRequest.id == approval.id,
+                ApprovalRequest.status == "pending",
+            )
+            .values(
+                status=status,
+                resolved_at=resolved_at,
+                resolved_by=actor.user_id,
+                comment=comment or None,
+            )
+        )
+        if result.rowcount != 1:
+            await self.db.rollback()
+            raise ConflictError("Approval was already resolved")
+        await self.db.commit()
+        approval.status = status
+        approval.resolved_at = resolved_at
         approval.resolved_by = actor.user_id
         approval.comment = comment or None
-        await self.db.commit()
 
         remaining = await self.repo.list_pending_approvals(execution.id)
         sink = ExecutionEventSink(self.session_factory, execution.id, broker=self.broker)
@@ -714,6 +748,7 @@ class ExecutionService:
                         model_gateway=model_gateway,
                         tool_gateway=tool_gateway,
                         knowledge_gateway=knowledge_gateway,
+                        skill_gateway=skill_gateway,
                         agent_loader=loader,
                         sink=sink,
                         checkpointer=self._checkpointer,
@@ -735,7 +770,9 @@ class ExecutionService:
                             interrupt_id=interrupt_id,
                         )
                 else:
-                    snapshot = await loader.load_published(execution.agent_id)
+                    snapshot = await self._pinned_agent_snapshot(
+                        loader, execution.agent_id, execution.agent_version_id
+                    )
                     runtime = RuntimeService(
                         model_gateway=model_gateway,
                         tool_gateway=tool_gateway,
@@ -833,6 +870,15 @@ class ExecutionService:
         except Exception:  # noqa: BLE001 - auxiliary execution index
             logger.exception("failed to update workflow execution")
 
+    @staticmethod
+    async def _pinned_agent_snapshot(
+        loader: AgentLoader, agent_id: str, version_id: str
+    ) -> AgentSnapshot:
+        load_version = getattr(loader, "load_version", None)
+        if version_id and callable(load_version):
+            return await load_version(agent_id, version_id)
+        return await loader.load_published(agent_id)
+
     async def _workflow_snapshot_for(self, execution: AgentExecution):
         if not execution.workflow_id:
             return None
@@ -865,6 +911,12 @@ class ExecutionService:
         return history
 
     async def _apply_result(
+        self, execution_id: str, result: RuntimeResult, sink: ExecutionEventSink
+    ) -> None:
+        async with _execution_lock(execution_id):
+            await self._apply_result_locked(execution_id, result, sink)
+
+    async def _apply_result_locked(
         self, execution_id: str, result: RuntimeResult, sink: ExecutionEventSink
     ) -> None:
         execution = await self.repo.get_execution(execution_id)

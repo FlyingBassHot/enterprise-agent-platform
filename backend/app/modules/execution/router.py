@@ -139,11 +139,15 @@ async def stream_execution(
         queue = broker.subscribe(execution_id)
         last = after_seq
         try:
-            for event in await replay_events(
-                session_factory, execution_id, after_seq=last, limit=2000
-            ):
-                last = max(last, int(event["seq"]))
-                yield format_sse(event)
+            while True:
+                batch = await replay_events(
+                    session_factory, execution_id, after_seq=last, limit=2000
+                )
+                for event in batch:
+                    last = max(last, int(event["seq"]))
+                    yield format_sse(event)
+                if len(batch) < 2000:
+                    break
             async with session_factory() as db:
                 row = await db.get(AgentExecution, execution_id)
                 finished = row is not None and row.status in terminal_statuses

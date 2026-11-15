@@ -16,8 +16,10 @@ class LocalFileStorage:
 
     def _path(self, key: str) -> Path:
         path = (self.root / key).resolve()
-        if not str(path).startswith(str(self.root)):
-            raise ValueError("invalid storage key")
+        try:
+            path.relative_to(self.root)
+        except ValueError as exc:
+            raise ValueError("invalid storage key") from exc
         return path
 
     async def put(self, key: str, data: bytes, content_type: str = "application/octet-stream") -> StoredObject:

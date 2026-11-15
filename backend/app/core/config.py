@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     knowledge_context_chars: int = 6000
     skill_scan_root: str = ""
     mcp_call_timeout_seconds: int = 60
+    rate_limit_enabled: bool = True
+    rate_limit_login_per_minute: int = 100
+    rate_limit_execution_per_minute: int = 30
+    rate_limit_upload_per_minute: int = 20
+    user_storage_quota_mb: int = 200
+    audit_log_enabled: bool = True
 
     execution_max_iterations: int = 12
     execution_timeout_seconds: int = 600

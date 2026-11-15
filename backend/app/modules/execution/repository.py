@@ -87,8 +87,12 @@ class ExecutionRepository:
             stmt = stmt.where(
                 (Message.execution_id.is_(None)) | (Message.execution_id != before_execution_id)
             )
-        stmt = stmt.order_by(Message.created_at.asc(), Message.id.asc()).limit(limit)
-        return list((await self.db.execute(stmt)).scalars().all())
+        stmt = (
+            stmt.order_by(Message.created_at.desc(), Message.id.desc()).limit(limit)
+        )
+        rows = list((await self.db.execute(stmt)).scalars().all())
+        rows.reverse()
+        return rows
 
     # --------------------------------------------------------------- executions
 
@@ -178,6 +182,20 @@ class ExecutionRepository:
         )
         return (await self.db.execute(stmt)).scalars().first()
 
+    async def get_approval_by_key(
+        self, execution_id: str, approval_key: str
+    ) -> ApprovalRequest | None:
+        stmt = (
+            select(ApprovalRequest)
+            .where(
+                ApprovalRequest.execution_id == execution_id,
+                ApprovalRequest.approval_key == approval_key,
+            )
+            .order_by(ApprovalRequest.requested_at.desc())
+            .limit(1)
+        )
+        return (await self.db.execute(stmt)).scalars().first()
+
     async def list_approvals(
         self,
         *,
@@ -228,6 +246,18 @@ class ExecutionRepository:
         return list((await self.db.execute(stmt)).scalars().all())
 
     # ---------------------------------------------------------------- artifacts
+
+    async def sum_artifact_size(self, owner_id: str) -> int:
+        from sqlalchemy import func
+
+        return int(
+            await self.db.scalar(
+                select(func.coalesce(func.sum(Artifact.size), 0)).where(
+                    Artifact.owner_id == owner_id
+                )
+            )
+            or 0
+        )
 
     async def create_artifact(self, artifact: Artifact) -> Artifact:
         self.db.add(artifact)

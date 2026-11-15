@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from datetime import UTC, datetime
 
@@ -14,9 +15,12 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.core.security import create_access_token, hash_password, verify_password
-from app.modules.permission.models import Permission, Role, User
+from app.modules.permission.models import AccessPolicy, Permission, Role, User
 from app.modules.permission.repository import PermissionRepository
 from app.modules.permission.schemas import (
+    AccessPolicyCreate,
+    AccessPolicyOut,
+    AccessPolicyUpdate,
     PermissionOut,
     RoleCreate,
     RoleOut,
@@ -42,6 +46,8 @@ SYSTEM_PERMISSIONS: list[tuple[str, str, str]] = [
     ("executions:write", "创建/取消执行", "execution"),
     ("approvals:read", "查看审批", "approval"),
     ("approvals:write", "处理审批", "approval"),
+    ("approvals:read_all", "查看所有审批", "approval"),
+    ("approvals:override", "审批例外/自批", "approval"),
     ("users:manage", "用户管理", "user"),
     ("roles:manage", "角色管理", "role"),
     ("dashboard:read", "查看仪表盘", "platform"),
@@ -53,7 +59,15 @@ SYSTEM_PERMISSIONS: list[tuple[str, str, str]] = [
     ("workflows:read", "查看工作流", "workflow"),
     ("workflows:write", "编辑工作流", "workflow"),
     ("workflows:publish", "发布工作流", "workflow"),
+    ("audit:logs:read", "查看审计日志", "audit"),
 ]
+
+_BOOTSTRAP_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+def _bootstrap_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    return _BOOTSTRAP_LOCKS.setdefault(id(loop), asyncio.Lock())
 
 ROLE_PERMISSIONS: dict[str, set[str] | None] = {
     "admin": None,  # all
@@ -94,6 +108,28 @@ ROLE_PERMISSIONS: dict[str, set[str] | None] = {
         "skills:read",
         "workflows:read",
     },
+    "operator": {
+        "agents:read",
+        "executions:read",
+        "executions:write",
+        "tools:read",
+        "tools:execute",
+        "approvals:read",
+        "dashboard:read",
+        "audit:read",
+        "knowledge:read",
+        "skills:read",
+        "workflows:read",
+    },
+    "approver": {
+        "agents:read",
+        "executions:read",
+        "approvals:read",
+        "approvals:write",
+        "approvals:read_all",
+        "dashboard:read",
+        "audit:read",
+    },
 }
 
 
@@ -115,6 +151,8 @@ class PermissionService:
                         "admin": "平台管理员",
                         "developer": "Agent 开发者",
                         "viewer": "只读用户",
+                        "operator": "业务操作员（运行 Agent）",
+                        "approver": "审批人（可处理他人审批）",
                     }[role_name],
                     is_system=True,
                 )
@@ -144,24 +182,26 @@ class PermissionService:
     async def bootstrap_admin(
         self, username: str, password: str, display_name: str = "", email: str | None = None
     ) -> UserOut:
-        if await self.repo.count_users() > 0:
-            raise ConflictError("Platform already initialized")
-        await self.ensure_seed()
-        admin_role = await self.repo.get_role_by_name("admin")
-        if admin_role is None:
-            raise ConflictError("Admin role is not initialized")
-        user = User(
-            username=username,
-            password_hash=hash_password(password),
-            display_name=display_name or username,
-            email=email,
-            is_superuser=True,
-        )
-        self.db.add(user)
-        await self.db.flush()
-        await self.repo.set_user_roles(user.id, [admin_role.id])
-        await self.db.commit()
-        return await self._user_out(user)
+        async with _bootstrap_lock():
+            await self.db.rollback()
+            if await self.repo.count_users() > 0:
+                raise ConflictError("Platform already initialized")
+            await self.ensure_seed()
+            admin_role = await self.repo.get_role_by_name("admin")
+            if admin_role is None:
+                raise ConflictError("Admin role is not initialized")
+            user = User(
+                username=username,
+                password_hash=hash_password(password),
+                display_name=display_name or username,
+                email=email,
+                is_superuser=True,
+            )
+            self.db.add(user)
+            await self.db.flush()
+            await self.repo.set_user_roles(user.id, [admin_role.id])
+            await self.db.commit()
+            return await self._user_out(user)
 
     async def authenticate(self, username: str, password: str) -> User:
         user = await self.repo.get_user_by_username(username)
@@ -177,7 +217,7 @@ class PermissionService:
         from app.core.config import get_settings
 
         settings = get_settings()
-        token = create_access_token(user.id)
+        token = create_access_token(user.id, {"username": user.username})
         return token, settings.access_token_ttl_minutes * 60
 
     async def load_context(self, user_id: str) -> UserContext:
@@ -211,13 +251,18 @@ class PermissionService:
             is_superuser=user.is_superuser,
             department_id=user.department_id,
             roles=role_names,
+            permissions=sorted(await self.repo.user_permission_codes(user.id)),
             created_at=user.created_at,
         )
 
     async def list_users(self) -> list[UserOut]:
         return [await self._user_out(user) for user in await self.repo.list_users()]
 
-    async def create_user(self, payload: UserCreate) -> UserOut:
+    async def create_user(
+        self, payload: UserCreate, actor: UserContext | None = None
+    ) -> UserOut:
+        if payload.is_superuser and (actor is None or not actor.is_superuser):
+            raise PermissionDeniedError("Only a superuser can create a superuser")
         if await self.repo.get_user_by_username(payload.username):
             raise ConflictError("Username already exists")
         role_ids = await self._resolve_role_ids(payload.role_names)
@@ -235,10 +280,16 @@ class PermissionService:
         await self.db.commit()
         return await self._user_out(user)
 
-    async def update_user(self, user_id: str, payload: UserUpdate) -> UserOut:
+    async def update_user(
+        self, user_id: str, payload: UserUpdate, actor: UserContext | None = None
+    ) -> UserOut:
         user = await self.repo.get_user(user_id)
         if user is None:
             raise NotFoundError("User not found")
+        if user.is_superuser and (actor is None or not actor.is_superuser):
+            raise PermissionDeniedError("Only a superuser can modify a superuser")
+        if user_id == (actor.user_id if actor else None) and payload.is_active is False:
+            raise PermissionDeniedError("You cannot deactivate your own account")
         if payload.display_name is not None:
             user.display_name = payload.display_name
         if payload.email is not None:
@@ -332,6 +383,36 @@ class PermissionService:
         if not user.has(code):
             raise PermissionDeniedError(f"Missing permission: {code}")
 
+    async def policy_effect(
+        self,
+        user: UserContext,
+        *,
+        resource_type: str,
+        resource_id: str,
+        action: str,
+    ) -> bool | None:
+        """Return an explicit ABAC decision, or None when no policy matches."""
+
+        matches: list[AccessPolicy] = []
+        for policy in await self.repo.list_policies(enabled_only=True):
+            if policy.resource_type not in {resource_type, "*"}:
+                continue
+            if policy.action not in {action, "*"}:
+                continue
+            if policy.subject_roles and not set(policy.subject_roles).intersection(user.roles):
+                continue
+            if policy.subject_departments and user.department_id not in policy.subject_departments:
+                continue
+            if policy.tenant_ids and user.tenant_id not in policy.tenant_ids:
+                continue
+            if policy.resource_ids and resource_id not in policy.resource_ids:
+                continue
+            matches.append(policy)
+        if not matches:
+            return None
+        matches.sort(key=lambda item: (-item.priority, 0 if item.effect == "deny" else 1))
+        return matches[0].effect == "allow"
+
     async def can_access_resource(
         self,
         user: UserContext,
@@ -341,16 +422,30 @@ class PermissionService:
         action: str = "read",
         owner_id: str | None = None,
     ) -> bool:
-        if user.is_superuser or user.has(f"{resource_type}:manage"):
+        if user.is_superuser:
+            return True
+        effect = await self.policy_effect(
+            user,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            action=action,
+        )
+        if effect is not None:
+            return effect
+        if user.has(f"{resource_type}:manage"):
             return True
         if owner_id and owner_id == user.user_id:
             return True
         grants = await self.repo.resource_permissions_for(resource_type, resource_id)
         role_names = set(user.roles)
         for grant in grants:
-            if grant.subject_type == "user" and grant.subject_id != user.user_id:
-                continue
-            if grant.subject_type == "role" and grant.subject_id not in role_names:
+            if grant.subject_type == "user":
+                if grant.subject_id != user.user_id:
+                    continue
+            elif grant.subject_type == "role":
+                if grant.subject_id not in role_names:
+                    continue
+            else:
                 continue
             if "*" in grant.actions or action in grant.actions:
                 return True
@@ -373,6 +468,46 @@ class PermissionService:
             owner_id=owner_id,
         ):
             raise PermissionDeniedError(f"No {action} access to {resource_type} {resource_id}")
+
+    async def list_policies(self, actor: UserContext) -> list[AccessPolicyOut]:
+        await self.require_permission(actor, "roles:manage")
+        return [
+            AccessPolicyOut.model_validate(policy)
+            for policy in await self.repo.list_policies()
+        ]
+
+    async def create_policy(
+        self, actor: UserContext, payload: AccessPolicyCreate
+    ) -> AccessPolicyOut:
+        await self.require_permission(actor, "roles:manage")
+        if await self.repo.get_policy_by_name(payload.name):
+            raise ConflictError("Access policy name already exists")
+        policy = AccessPolicy(**payload.model_dump())
+        self.db.add(policy)
+        await self.db.commit()
+        await self.db.refresh(policy)
+        return AccessPolicyOut.model_validate(policy)
+
+    async def update_policy(
+        self, actor: UserContext, policy_id: str, payload: AccessPolicyUpdate
+    ) -> AccessPolicyOut:
+        await self.require_permission(actor, "roles:manage")
+        policy = await self.repo.get_policy(policy_id)
+        if policy is None:
+            raise NotFoundError("Access policy not found")
+        for key, value in payload.model_dump(exclude_unset=True).items():
+            if value is not None:
+                setattr(policy, key, value)
+        await self.db.commit()
+        return AccessPolicyOut.model_validate(policy)
+
+    async def delete_policy(self, actor: UserContext, policy_id: str) -> None:
+        await self.require_permission(actor, "roles:manage")
+        policy = await self.repo.get_policy(policy_id)
+        if policy is None:
+            raise NotFoundError("Access policy not found")
+        await self.db.delete(policy)
+        await self.db.commit()
 
     async def grant(self, payload, created_by: str | None = None):  # noqa: ANN001
         grant = await self.repo.grant_resource_permission(

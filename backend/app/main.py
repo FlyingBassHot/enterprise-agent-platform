@@ -6,9 +6,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
+from app.core.audit_middleware import AuditMiddleware
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import RequestContextMiddleware, configure_logging, get_logger
+from app.core.rate_limit import RateLimitMiddleware
 from app.domain_plugins.audit import register as register_audit_plugin
 from app.infrastructure.database.session import check_database, get_session_factory, init_db
 from app.modules.execution.service import ExecutionService
@@ -23,6 +25,10 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if not settings.worker_inline:
+        raise RuntimeError(
+            "APP_WORKER_INLINE=false requires an external worker; none is bundled in this build"
+        )
     await init_db()
     async with get_session_factory()() as db:
         service = PermissionService(db)
@@ -56,6 +62,8 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
     )
     app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(AuditMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

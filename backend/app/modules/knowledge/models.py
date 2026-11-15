@@ -9,6 +9,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -81,6 +82,9 @@ class DocumentVersion(UUIDMixin, Base):
 class DocumentChunk(UUIDMixin, Base):
     __tablename__ = "document_chunks"
     __table_args__ = (
+        UniqueConstraint(
+            "document_id", "version", "chunk_index", name="uq_document_chunk_version_index"
+        ),
         Index("ix_document_chunks_document_version", "document_id", "version"),
         Index("ix_document_chunks_kb_document", "knowledge_base_id", "document_id"),
     )

@@ -328,3 +328,36 @@ async def test_permission_checks_are_enforced(
         json={"agent_id": "agent-1", "input": "nope"},
     )
     assert response.status_code == 403, response.text
+
+
+async def test_conversation_messages_return_newest_window(
+    client: AsyncClient, admin: dict[str, str], db: AsyncSession
+) -> None:
+    from app.modules.execution.repository import ExecutionRepository
+
+    created = await client.post(
+        "/api/v1/conversations",
+        headers=admin,
+        json={"agent_id": "history-agent", "title": "history"},
+    )
+    assert created.status_code in (200, 201), created.text
+    conversation_id = created.json()["id"]
+    repo = ExecutionRepository(db)
+    for index in range(600):
+        await repo.add_message(
+            conversation_id=conversation_id,
+            role="user",
+            content=f"message-{index:03d}",
+            execution_id=None,
+        )
+    await db.commit()
+
+    response = await client.get(
+        f"/api/v1/conversations/{conversation_id}/messages", headers=admin
+    )
+    assert response.status_code == 200, response.text
+    contents = [row["content"] for row in response.json()]
+    assert len(contents) == 500
+    assert contents[-1] == "message-599"
+    assert contents[0] == "message-100"
+    assert "message-000" not in contents

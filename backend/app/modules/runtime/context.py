@@ -63,6 +63,7 @@ class ExecutionSink(Protocol):
         risk_level: str,
         kind: str = "tool_call",
         title: str | None = None,
+        approval_key: str | None = None,
     ) -> ApprovalHandle: ...
 
     async def attach_interrupt_ids(self, mapping: dict[str, str]) -> None: ...
@@ -120,13 +121,16 @@ def build_system_prompt(
     knowledge_chunks: Sequence[RetrievalChunk] = (),
     knowledge_context_chars: int = 6000,
 ) -> str:
-    parts = [render_template(snapshot.system_prompt, variables).strip()]
+    # Prompt templates are resolved and validated once at publish time. Applying
+    # str.format again here would corrupt literal JSON/code braces and could
+    # raise on dotted placeholders, so snapshots are used verbatim.
+    parts = [snapshot.system_prompt.strip()]
     if snapshot.task_prompt:
-        task = render_template(snapshot.task_prompt, variables).strip()
+        task = snapshot.task_prompt.strip()
         if task:
             parts.append(task)
     if snapshot.tool_instructions:
-        instructions = render_template(snapshot.tool_instructions, variables).strip()
+        instructions = snapshot.tool_instructions.strip()
         if instructions:
             parts.append(f"## Tool Instructions\n{instructions}")
     for skill in skills:

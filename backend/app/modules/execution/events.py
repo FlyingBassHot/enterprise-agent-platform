@@ -138,10 +138,15 @@ class ExecutionEventSink:
         risk_level: str,
         kind: str = "tool_call",
         title: str | None = None,
+        approval_key: str | None = None,
     ) -> ApprovalHandle:
         async with self.session_factory() as db:
             repo = ExecutionRepository(db)
-            existing = await repo.get_approval_by_call(self.execution_id, tool_call_id)
+            existing = (
+                await repo.get_approval_by_key(self.execution_id, approval_key)
+                if approval_key
+                else await repo.get_approval_by_call(self.execution_id, tool_call_id)
+            )
             if existing is not None:
                 return ApprovalHandle(id=existing.id, created=False)
             approval = ApprovalRequest(
@@ -149,10 +154,15 @@ class ExecutionEventSink:
                 execution_id=self.execution_id,
                 kind=kind,
                 tool_call_id=tool_call_id,
+                approval_key=approval_key,
                 tool_name=tool_name,
                 arguments=arguments,
                 status="pending",
-                payload={"risk_level": risk_level, "title": title},
+                payload={
+                    "risk_level": risk_level,
+                    "title": title,
+                    "approval_key": approval_key,
+                },
                 requested_at=datetime.now(UTC),
             )
             await repo.create_approval(approval)
