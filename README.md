@@ -81,6 +81,8 @@ docker compose exec backend cat /data/initial_admin_password.txt
 
 打开 <http://localhost:8080>，使用 `admin` + 上述密码登录。审计演示 Agent 与样例数据会自动 seed。
 
+如 8080 端口已被占用，在项目根目录 `.env` 中设置 `FRONTEND_PORT=8081`，再启动并访问 <http://localhost:8081>。
+
 > 生产环境必须设置 `APP_SECRET_KEY`；`APP_ENV=prod` 时不足 32 位或默认值会拒绝启动。
 
 ### 本地开发

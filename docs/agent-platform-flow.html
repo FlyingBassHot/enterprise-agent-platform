@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f6fb">
+  <title>企业 Agent 平台 · 运行流程</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1d2940;
+      --muted: #69758b;
+      --line: #dbe2ee;
+      --paper: #fff;
+      --canvas: #f4f6fb;
+      --blue: #4468e8;
+      --blue-soft: #edf1ff;
+      --teal: #138779;
+      --teal-soft: #eaf7f4;
+      --amber: #b47a17;
+      --amber-soft: #fff5df;
+      --violet: #7356ca;
+      --violet-soft: #f2edff;
+      --shadow: 0 12px 30px rgb(34 50 86 / 8%), 0 2px 6px rgb(34 50 86 / 4%);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(ellipse at 9% 0%, rgb(68 104 232 / 9%), transparent 34rem),
+        radial-gradient(ellipse at 96% 14%, rgb(19 135 121 / 8%), transparent 30rem),
+        var(--canvas);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.55;
+    }
+    .shell { max-width: 1440px; padding: 52px 36px 44px; margin: auto; }
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: 8px; color: var(--blue);
+      font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase;
+    }
+    .eyebrow::before { width: 8px; height: 8px; border-radius: 3px; background: currentColor; content: ""; }
+    header { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 30px; }
+    h1 { margin: 10px 0 8px; font-size: clamp(30px, 4vw, 48px); line-height: 1.12; letter-spacing: -.045em; }
+    .subtitle { max-width: 760px; margin: 0; color: var(--muted); font-size: 15px; }
+    .engine-chip {
+      display: flex; align-items: center; gap: 10px; flex: 0 0 auto; padding: 11px 15px;
+      border: 1px solid #dfe5f3; border-radius: 14px; background: rgb(255 255 255 / 75%);
+      color: #3e4d69; font-size: 13px; font-weight: 700; box-shadow: 0 4px 14px rgb(34 50 86 / 4%);
+    }
+    .engine-chip .spark { color: var(--blue); font-size: 17px; }
+    .overview {
+      display: grid; grid-template-columns: 1fr 42px 1.15fr 42px 1fr; align-items: center;
+      gap: 8px; padding: 18px 22px; margin-bottom: 24px; border: 1px solid #e0e6f0;
+      border-radius: 18px; background: rgb(255 255 255 / 75%);
+    }
+    .overview-part { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .overview-icon { display: grid; width: 38px; height: 38px; flex: 0 0 auto; place-items: center; border-radius: 12px; font-size: 18px; }
+    .overview-part strong { display: block; font-size: 13px; }
+    .overview-part span { display: block; color: var(--muted); font-size: 11px; }
+    .overview-arrow { color: #9ca8bb; text-align: center; font-size: 20px; }
+    .board {
+      display: grid; grid-template-columns: minmax(0, 1fr) 276px; gap: 20px; align-items: start;
+    }
+    .flow {
+      display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 0 16px;
+      padding: 23px; border: 1px solid #e0e6f0; border-radius: 22px; background: rgb(255 255 255 / 83%);
+      box-shadow: var(--shadow);
+    }
+    .stage {
+      display: grid; grid-template-columns: 30px 1fr; align-content: start; gap: 3px 10px;
+      padding: 16px 9px 0 0; border-right: 1px solid var(--line);
+    }
+    .stage-number {
+      display: grid; width: 27px; height: 27px; place-items: center; border-radius: 9px;
+      background: var(--blue-soft); color: var(--blue); font-size: 12px; font-weight: 800;
+    }
+    .stage:nth-of-type(4) .stage-number { background: var(--amber-soft); color: var(--amber); }
+    .stage-name { align-self: center; font-size: 13px; font-weight: 800; }
+    .stage-desc { grid-column: 2; color: var(--muted); font-size: 10px; }
+    .stage:not(:last-of-type)::after { content: ""; width: 1px; height: 14px; grid-column: 1; justify-self: center; margin-top: 7px; background: #bac6db; }
+    .steps { display: flex; flex-direction: column; align-items: center; min-width: 0; padding: 3px 0 13px; }
+    .node {
+      position: relative; width: min(100%, 515px); padding: 13px 16px; border: 1px solid #e2e8f2;
+      border-radius: 13px; background: var(--paper); box-shadow: 0 4px 12px rgb(34 50 86 / 5%);
+    }
+    .node.primary { border-color: #d8e0ff; background: linear-gradient(110deg, #f7f8ff, #fff 70%); }
+    .node.tool { border-color: #d6ece7; background: linear-gradient(110deg, #f3fbf9, #fff 72%); }
+    .node.approval { border-color: #f2dfb7; background: linear-gradient(110deg, #fffbf1, #fff 70%); }
+    .node.result { border-color: #e2d8fa; background: linear-gradient(110deg, #faf8ff, #fff 72%); }
+    .node-heading { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 800; }
+    .node-icon { display: grid; width: 27px; height: 27px; flex: 0 0 auto; place-items: center; border-radius: 9px; background: #eef2f9; font-size: 14px; }
+    .primary .node-icon { background: var(--blue-soft); }
+    .tool .node-icon { background: var(--teal-soft); }
+    .approval .node-icon { background: var(--amber-soft); }
+    .result .node-icon { background: var(--violet-soft); }
+    .node p { margin: 5px 0 0 36px; color: var(--muted); font-size: 11px; }
+    .node-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 0 36px; }
+    .tag { padding: 2px 7px; border-radius: 6px; background: #f1f4f9; color: #58667d; font-size: 9px; font-weight: 700; }
+    .connector { display: grid; min-height: 24px; place-items: center; color: #a7b3c6; font-size: 16px; }
+    .decision {
+      width: 220px; padding: 8px 12px; border: 1px solid #e8d9b6; border-radius: 999px;
+      background: #fffaf0; color: #8f691f; text-align: center; font-size: 11px; font-weight: 800;
+    }
+    .branches { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: min(100%, 515px); }
+    .branch { padding: 9px 11px; border: 1px solid #e6eaf1; border-radius: 10px; background: #fbfcfe; color: var(--muted); font-size: 10px; text-align: center; }
+    .branch strong { display: block; margin-bottom: 2px; color: var(--ink); font-size: 11px; }
+    .approval-flow {
+      display: grid; grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr); align-items: center;
+      gap: 8px; width: min(100%, 515px);
+    }
+    .approval-flow .node { width: 100%; }
+    .approval-outcome { padding: 8px; border-radius: 9px; background: var(--teal-soft); color: #286f65; text-align: center; font-size: 10px; font-weight: 750; }
+    .loop-note {
+      display: flex; align-items: center; gap: 10px; width: min(100%, 515px); padding: 10px 13px;
+      border: 1px dashed #9caee9; border-radius: 11px; background: #f5f7ff; color: #4e61a5; font-size: 10px;
+    }
+    .loop-note .loop-icon { font-size: 17px; }
+    .loop-note strong { color: #344d9e; }
+    .side { display: flex; flex-direction: column; gap: 15px; }
+    .side-card { padding: 18px; border: 1px solid #e0e6f0; border-radius: 17px; background: rgb(255 255 255 / 84%); box-shadow: 0 6px 20px rgb(34 50 86 / 5%); }
+    .side-card h2 { margin: 0 0 11px; font-size: 13px; letter-spacing: -.01em; }
+    .legend { display: flex; flex-direction: column; gap: 9px; }
+    .legend-row { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 11px; }
+    .swatch { width: 9px; height: 9px; border-radius: 3px; }
+    .side-card p { margin: 0; color: var(--muted); font-size: 11px; }
+    .fact { display: grid; grid-template-columns: 24px 1fr; gap: 9px; align-items: start; margin-top: 11px; }
+    .fact-icon { display: grid; width: 23px; height: 23px; place-items: center; border-radius: 7px; background: var(--blue-soft); color: var(--blue); font-size: 12px; }
+    .fact strong { display: block; color: var(--ink); font-size: 10px; }
+    .fact span { display: block; margin-top: 1px; color: var(--muted); font-size: 10px; }
+    .footnote { margin: 15px 4px 0; color: #8994a8; font-size: 10px; }
+    @media (max-width: 940px) { .board { grid-template-columns: 1fr; } .side { display: grid; grid-template-columns: repeat(3, 1fr); } }
+    @media (max-width: 650px) {
+      .shell { padding: 32px 15px 26px; }
+      header { align-items: start; flex-direction: column; margin-bottom: 22px; }
+      .overview { grid-template-columns: 1fr; gap: 11px; padding: 16px; }
+      .overview-arrow { transform: rotate(90deg); }
+      .flow { grid-template-columns: 1fr; gap: 0; padding: 15px; }
+      .stage { grid-template-columns: 26px 1fr; padding: 17px 0 8px; border: 0; }
+      .stage-desc { grid-column: 2; }
+      .stage:not(:last-of-type)::after { display: none; }
+      .steps { padding: 0 0 12px; }
+      .node { padding: 11px; }
+      .node p, .node-tags { margin-left: 0; }
+      .side { grid-template-columns: 1fr; }
+      .approval-flow { grid-template-columns: 1fr; }
+      .approval-flow > span { transform: rotate(90deg); text-align: center; }
+    }
+    @media print {
+      body { background: #fff; }
+      .shell { max-width: none; padding: 14mm; }
+      .flow, .side-card { box-shadow: none; }
+      header, .overview, .board { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <div class="eyebrow">ENTERPRISE AGENT PLATFORM</div>
+        <h1>一次 Agent 任务，如何从配置走向结果</h1>
+        <p class="subtitle">平台管理多份 Agent 配置；每次任务由共用的 LangGraph Runtime 执行，并拥有独立的执行状态与检查点。</p>
+      </div>
+      <div class="engine-chip"><span class="spark">✳</span> 共用 Runtime · 独立任务状态</div>
+    </header>
+
+    <section class="overview" aria-label="流程总览">
+      <div class="overview-part"><div class="overview-icon" style="background:var(--blue-soft);color:var(--blue)">▦</div><div><strong>控制面</strong><span>管理 Agent / Prompt / 模型 / 工具</span></div></div>
+      <div class="overview-arrow">→</div>
+      <div class="overview-part"><div class="overview-icon" style="background:var(--teal-soft);color:var(--teal)">⟳</div><div><strong>运行面 · LangGraph</strong><span>Agent 推理 ↔ 工具执行 ↔ 状态恢复</span></div></div>
+      <div class="overview-arrow">→</div>
+      <div class="overview-part"><div class="overview-icon" style="background:var(--violet-soft);color:var(--violet)">↗</div><div><strong>可追踪结果</strong><span>回答 / 事件 / 审批 / 工具记录</span></div></div>
+    </section>
+
+    <div class="board">
+      <section class="flow" aria-label="Agent 平台完整运行流程">
+        <div class="stage"><span class="stage-number">01</span><span class="stage-name">配置与发布</span><span class="stage-desc">控制面 · 平台管理模块</span></div>
+        <div class="steps">
+          <article class="node primary">
+            <div class="node-heading"><span class="node-icon">◈</span>创建 Agent 配置</div>
+            <p>选择模型与 Prompt 版本，绑定工具，设置权限、风险审批和运行预算。</p>
+            <div class="node-tags"><span class="tag">AgentService</span><span class="tag">PromptService</span><span class="tag">ModelService</span><span class="tag">Tool Registry</span></div>
+          </article>
+          <div class="connector">↓</div>
+          <article class="node primary">
+            <div class="node-heading"><span class="node-icon">✓</span>校验并发布</div>
+            <p>检查配置、模型和工具；发布后形成不可变版本快照，供任务加载。</p>
+            <div class="node-tags"><span class="tag">版本固定</span><span class="tag">配置快照</span></div>
+          </article>
+        </div>
+
+        <div class="stage"><span class="stage-number">02</span><span class="stage-name">请求与准备</span><span class="stage-desc">用户请求 · FastAPI</span></div>
+        <div class="steps">
+          <article class="node">
+            <div class="node-heading"><span class="node-icon">⇧</span>提交任务与附件</div>
+            <p>用户在工作台选择已发布 Agent，输入问题并上传文件。</p>
+            <div class="node-tags"><span class="tag">Vue 3</span><span class="tag">FastAPI</span></div>
+          </article>
+          <div class="connector">↓</div>
+          <article class="node">
+            <div class="node-heading"><span class="node-icon">⌑</span>鉴权、授权并创建执行</div>
+            <p>检查 JWT、RBAC 与资源访问；创建执行记录和独立 LangGraph thread_id。</p>
+            <div class="node-tags"><span class="tag">ExecutionService</span><span class="tag">ArtifactService</span><span class="tag">execution_id</span></div>
+          </article>
+          <div class="connector">↓</div>
+          <article class="node">
+            <div class="node-heading"><span class="node-icon">▤</span>加载 Agent 快照与上下文</div>
+            <p>读取已发布版本、对话历史和当前用户上下文，组装初始状态。</p>
+            <div class="node-tags"><span class="tag">AgentSnapshot</span><span class="tag">AgentState</span></div>
+          </article>
+        </div>
+
+        <div class="stage"><span class="stage-number">03</span><span class="stage-name">推理与工具循环</span><span class="stage-desc">运行面 · LangGraph</span></div>
+        <div class="steps">
+          <article class="node primary">
+            <div class="node-heading"><span class="node-icon">✳</span>Agent 节点调用模型</div>
+            <p>通过 Model Gateway 发送消息与已授权工具描述；模型给出回答或工具调用请求。</p>
+            <div class="node-tags"><span class="tag">Mock</span><span class="tag">OpenAI 兼容接口</span><span class="tag">工具请求</span></div>
+          </article>
+          <div class="connector">↓ 模型发出工具请求</div>
+          <article class="node tool">
+            <div class="node-heading"><span class="node-icon">⌘</span>Tool 节点与执行网关</div>
+            <p>核对工具绑定、版本、参数和权限；通过后调用原生 Python 或 HTTP 工具。</p>
+            <div class="node-tags"><span class="tag">ToolService</span><span class="tag">JSON Schema</span><span class="tag">超时 / 记录</span></div>
+          </article>
+          <div class="connector">↓</div>
+          <div class="decision">本次工具调用是否需要审批？</div>
+          <div class="connector">↓</div>
+          <div class="approval-flow">
+            <div class="node approval">
+              <div class="node-heading"><span class="node-icon">⏸</span>需要审批</div>
+              <p>创建审批单，LangGraph interrupt 暂停并保存检查点。</p>
+            </div>
+            <span class="connector">→</span>
+            <div>
+              <div class="approval-outcome">批准：恢复后执行工具</div>
+              <div style="height:7px"></div>
+              <div class="branch"><strong>拒绝：结果返回模型</strong>模型根据拒绝结果继续回答</div>
+            </div>
+          </div>
+          <div class="connector">↓ 执行工具 / 收到审批决定</div>
+          <div class="branches">
+            <div class="branch"><strong>工具结果回传</strong>追加到 Agent 状态</div>
+            <div class="branch"><strong>检查点恢复</strong>Command(resume=...)</div>
+          </div>
+          <div class="connector">↓</div>
+          <div class="loop-note"><span class="loop-icon">⟲</span><span><strong>循环边：回到 Agent 节点</strong>　模型可再次调用工具；也可结束并生成最终回答。受最大迭代次数和执行超时限制。</span></div>
+        </div>
+
+        <div class="stage"><span class="stage-number">04</span><span class="stage-name">保存与呈现</span><span class="stage-desc">执行记录 · SSE</span></div>
+        <div class="steps">
+          <article class="node result">
+            <div class="node-heading"><span class="node-icon">◎</span>最终回答与执行证据</div>
+            <p>保存对话、执行状态、模型调用、工具记录、审批和有序事件。</p>
+            <div class="node-tags"><span class="tag">SQLite</span><span class="tag">检查点</span><span class="tag">审计事件</span></div>
+          </article>
+          <div class="connector">↓</div>
+          <article class="node result">
+            <div class="node-heading"><span class="node-icon">↗</span>前端实时展示</div>
+            <p>SSE 推送运行进度与结果；浏览器断线后按事件序号重连和补放。</p>
+            <div class="node-tags"><span class="tag">SSE</span><span class="tag">任务历史</span><span class="tag">执行详情</span></div>
+          </article>
+        </div>
+      </section>
+
+      <aside class="side">
+        <section class="side-card">
+          <h2>颜色说明</h2>
+          <div class="legend">
+            <div class="legend-row"><span class="swatch" style="background:var(--blue)"></span>Agent 配置与模型推理</div>
+            <div class="legend-row"><span class="swatch" style="background:var(--teal)"></span>工具与执行网关</div>
+            <div class="legend-row"><span class="swatch" style="background:var(--amber)"></span>人工审批与恢复</div>
+            <div class="legend-row"><span class="swatch" style="background:var(--violet)"></span>结果与事件追踪</div>
+          </div>
+        </section>
+        <section class="side-card">
+          <h2>这里的「多个 Agent」</h2>
+          <p>多个 Agent 是多份版本化配置；执行逻辑共用，状态按任务隔离。</p>
+          <div class="fact"><span class="fact-icon">▦</span><div><strong>同一套 Runtime 代码</strong><span>LangGraph 状态图按配置运行</span></div></div>
+          <div class="fact"><span class="fact-icon">⎇</span><div><strong>每次任务独立 thread_id</strong><span>对话状态与检查点分开保存</span></div></div>
+        </section>
+        <section class="side-card">
+          <h2>当前 LangGraph 回路</h2>
+          <p><strong style="color:#334b95">Agent → Tools → Agent</strong></p>
+          <div class="fact"><span class="fact-icon">1</span><div><strong>Agent 节点</strong><span>调用模型，产出回答或工具请求</span></div></div>
+          <div class="fact"><span class="fact-icon">2</span><div><strong>Tools 节点</strong><span>校验权限，审批后执行并回传结果</span></div></div>
+        </section>
+      </aside>
+    </div>
+    <p class="footnote">项目依据：FastAPI · Vue 3 · LangGraph · SQLite Checkpointer · 项目自建 Agent / Tool / Execution 服务。行业规则由领域工具实现。</p>
+  </main>
+</body>
+</html>

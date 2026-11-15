@@ -12,7 +12,7 @@ services:
       APP_SEED_DEMO: ${APP_SEED_DEMO:-true}
       APP_BOOTSTRAP_ADMIN_USERNAME: ${APP_BOOTSTRAP_ADMIN_USERNAME:-admin}
       APP_BOOTSTRAP_TOKEN: ${APP_BOOTSTRAP_TOKEN:-}
-      APP_CORS_ORIGINS: http://localhost:8080
+      APP_CORS_ORIGINS: http://localhost:${FRONTEND_PORT:-8080},http://127.0.0.1:${FRONTEND_PORT:-8080}
       APP_LLM_BASE_URL: ${APP_LLM_BASE_URL:-http://host.docker.internal:8000/v1}
       APP_LLM_API_KEY: ${APP_LLM_API_KEY:-not-needed}
       APP_LLM_MODEL: ${APP_LLM_MODEL:-local-model}
@@ -34,7 +34,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "8080:80"
+      - "${FRONTEND_PORT:-8080}:80"
     restart: unless-stopped
 
 volumes:
