@@ -35,6 +35,7 @@ from app.modules.tool.models import (
     ToolPermission,
     ToolVersion,
 )
+from app.modules.workflow.models import Workflow, WorkflowExecution, WorkflowVersion
 
 __all__ = [
     "Agent",
@@ -69,4 +70,7 @@ __all__ = [
     "ToolVersion",
     "User",
     "UserRole",
+    "Workflow",
+    "WorkflowExecution",
+    "WorkflowVersion",
 ]

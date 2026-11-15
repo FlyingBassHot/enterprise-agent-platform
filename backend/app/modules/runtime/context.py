@@ -61,6 +61,8 @@ class ExecutionSink(Protocol):
         tool_name: str,
         arguments: dict[str, Any],
         risk_level: str,
+        kind: str = "tool_call",
+        title: str | None = None,
     ) -> ApprovalHandle: ...
 
     async def attach_interrupt_ids(self, mapping: dict[str, str]) -> None: ...

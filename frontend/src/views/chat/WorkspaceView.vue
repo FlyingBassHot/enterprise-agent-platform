@@ -932,10 +932,22 @@ onMounted(async () => {
               <StatusTag :status="status" />
             </div>
             <div class="meta-row">
-              <span class="meta-label">Agent</span>
+              <span class="meta-label">{{ execution.workflow_id ? 'Workflow' : 'Agent' }}</span>
               <span class="meta-value">
-                {{ agentName(execution.agent_id) }} · v{{ execution.agent_version }}
+                <template v-if="execution.workflow_id">
+                  Workflow 执行
+                  <span v-if="execution.agent_id" class="muted">
+                    · {{ agentName(execution.agent_id) }} · v{{ execution.agent_version }}
+                  </span>
+                </template>
+                <template v-else>
+                  {{ agentName(execution.agent_id) }} · v{{ execution.agent_version }}
+                </template>
               </span>
+            </div>
+            <div v-if="execution.workflow_id" class="meta-row">
+              <span class="meta-label">Workflow ID</span>
+              <span class="meta-value mono">{{ shortId(execution.workflow_id, 12) }}</span>
             </div>
             <div class="meta-row">
               <span class="meta-label">执行 ID</span>

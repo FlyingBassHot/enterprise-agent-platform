@@ -285,7 +285,17 @@ async def test_agent_validation_rejects_invalid_configuration(
             ),
         },
     )
-    assert workflow_mode.status_code == 422, workflow_mode.text
+    assert workflow_mode.status_code == 201, workflow_mode.text
+    workflow_validation = await client.post(
+        f"{AGENTS}/{workflow_mode.json()['id']}/validate", headers=admin
+    )
+    assert workflow_validation.status_code == 200
+    assert workflow_validation.json()["valid"] is False
+    assert any("workflow_id" in e for e in workflow_validation.json()["errors"])
+    workflow_publish = await client.post(
+        f"{AGENTS}/{workflow_mode.json()['id']}/publish", headers=admin
+    )
+    assert workflow_publish.status_code == 422, workflow_publish.text
 
     bad_risk = await client.post(
         AGENTS,

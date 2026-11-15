@@ -36,6 +36,7 @@ from app.modules.permission.service import PermissionService  # noqa: E402
 from app.modules.prompt.service import PromptService  # noqa: E402
 from app.modules.skill.service import SkillService  # noqa: E402
 from app.modules.tool.service import ToolService  # noqa: E402
+from app.modules.workflow.service import WorkflowService  # noqa: E402
 
 
 def _write_initial_password(password: str) -> Path:
@@ -133,6 +134,7 @@ async def main() -> None:
             model_config_id=model_config_id,
             knowledge_service=KnowledgeService(db),
             skill_service=SkillService(db),
+            workflow_service=WorkflowService(db),
         )
         await db.commit()
 

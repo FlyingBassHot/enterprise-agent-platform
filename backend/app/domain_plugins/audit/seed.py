@@ -25,6 +25,7 @@ KNOWLEDGE_BASE_NAME = "audit-rules"
 KNOWLEDGE_DOCUMENT = "audit_rules.md"
 SKILL_NAME = "bank_transaction_audit"
 KNOWLEDGE_SOURCE = Path(__file__).resolve().parent / "knowledge" / "audit_rules.md"
+WORKFLOW_NAME = "audit-review"
 TOOL_INSTRUCTIONS = (
     "优先使用 analyze_transactions 获取确定性结果，再用 generate_audit_report 生成报告。"
 )
@@ -215,6 +216,93 @@ async def _ensure_skill(skill_service: Any, actor: UserContext) -> str | None:
     return SKILL_NAME
 
 
+def _workflow_definition(agent_id: str) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "start_node": "start",
+        "output": "",
+        "nodes": [
+            {"id": "start", "type": "start", "name": "开始", "next": "audit", "config": {}},
+            {
+                "id": "audit",
+                "type": "agent",
+                "name": "审计分析",
+                "config": {
+                    "agent_id": agent_id,
+                    "input": "{{input}}",
+                    "output_key": "audit_result",
+                    "max_iterations": 6,
+                },
+                "next": "check",
+            },
+            {
+                "id": "check",
+                "type": "condition",
+                "name": "是否存在异常",
+                "config": {"expression": 'audit_result contains "异常"'},
+                "on_true": "review",
+                "on_false": "end",
+            },
+            {
+                "id": "review",
+                "type": "approval",
+                "name": "人工复核",
+                "config": {
+                    "title": "审计结果复核",
+                    "description": "请确认异常清单后再生成正式报告",
+                    "on_reject": "fail",
+                },
+                "next": "end",
+            },
+            {
+                "id": "end",
+                "type": "end",
+                "name": "结束",
+                "config": {"output_key": "audit_result"},
+            },
+        ],
+    }
+
+
+async def _ensure_workflow(
+    workflow_service: Any, actor: UserContext, agent_id: str
+) -> dict[str, Any] | None:
+    if workflow_service is None:
+        return None
+    from app.modules.workflow.schemas import WorkflowCreate, WorkflowDefinition, WorkflowUpdate
+
+    definition_json = _workflow_definition(agent_id)
+    definition = WorkflowDefinition.model_validate(definition_json)
+    workflows = await workflow_service.list_workflows(actor)
+    workflow = next(
+        (item for item in workflows if _value(item, "name") == WORKFLOW_NAME), None
+    )
+    if workflow is None:
+        workflow = await workflow_service.create_workflow(
+            actor,
+            WorkflowCreate(
+                name=WORKFLOW_NAME,
+                description="审计 Agent + 条件判断 + 人工复核的演示工作流",
+                definition=definition,
+            ),
+        )
+    elif (
+        _value(workflow, "status") != "published"
+        or _value(workflow, "definition") != definition
+    ):
+        workflow = await workflow_service.update_workflow(
+            actor,
+            _value(workflow, "id"),
+            WorkflowUpdate(definition=definition),
+        )
+    if _value(workflow, "status") != "published":
+        workflow = await workflow_service.publish(actor, _value(workflow, "id"))
+    return {
+        "workflow_id": _value(workflow, "id"),
+        "workflow_version": _value(workflow, "current_version"),
+    }
+
+
 async def seed_audit_demo(
     agent_service: Any,
     prompt_service: Any,
@@ -224,6 +312,7 @@ async def seed_audit_demo(
     *,
     knowledge_service: Any = None,
     skill_service: Any = None,
+    workflow_service: Any = None,
 ) -> dict[str, Any]:
     """Create or update the audit prompt and ``audit-analyst`` Agent.
 
@@ -265,7 +354,8 @@ async def seed_audit_demo(
             and _config_matches(_value(agent, "draft_config"), config)
         )
         if already_seeded:
-            return _result(
+            workflow_info = await _ensure_workflow(workflow_service, actor, agent_id)
+            result = _result(
                 agent,
                 agent_id=agent_id,
                 prompt_id=prompt_id,
@@ -275,6 +365,9 @@ async def seed_audit_demo(
                 knowledge_base_id=knowledge_base_id,
                 skill_name=skill_name,
             )
+            if workflow_info:
+                result.update(workflow_info)
+            return result
         await agent_service.update_agent(agent_id, AgentUpdate(config=config), actor)
 
     validation = await agent_service.validate(agent_id, actor)
@@ -283,7 +376,8 @@ async def seed_audit_demo(
         raise ValidationError(f"审计 Agent 校验失败: {errors or '未知错误'}")
 
     agent = await agent_service.publish(agent_id, actor)
-    return _result(
+    workflow_info = await _ensure_workflow(workflow_service, actor, agent_id)
+    result = _result(
         agent,
         agent_id=agent_id,
         prompt_id=prompt_id,
@@ -293,6 +387,9 @@ async def seed_audit_demo(
         knowledge_base_id=knowledge_base_id,
         skill_name=skill_name,
     )
+    if workflow_info:
+        result.update(workflow_info)
+    return result
 
 
 __all__ = ["AGENT_NAME", "seed_audit_demo"]

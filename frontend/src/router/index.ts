@@ -52,6 +52,12 @@ const router = createRouter({
           meta: { title: 'Skill 管理', permission: 'skills:read' },
         },
         {
+          path: 'workflows',
+          name: 'workflows',
+          component: () => import('@/views/workflow/WorkflowListView.vue'),
+          meta: { title: '工作流', permission: 'workflows:read' },
+        },
+        {
           path: 'prompts',
           name: 'prompts',
           component: () => import('@/views/prompt/PromptListView.vue'),

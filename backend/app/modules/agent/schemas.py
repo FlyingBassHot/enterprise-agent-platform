@@ -20,7 +20,8 @@ class PromptBinding(BaseModel):
 
 
 class ExecutionSettings(BaseModel):
-    mode: Literal["agent"] = "agent"
+    mode: Literal["agent", "workflow", "hybrid"] = "agent"
+    workflow_id: str | None = None
     max_iterations: int = Field(default=12, ge=1, le=200)
     timeout_seconds: int = Field(default=600, ge=1, le=86400)
     approval_risk_levels: list[Literal["low", "medium", "high", "critical"]] = Field(

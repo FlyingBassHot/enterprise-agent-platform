@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class _ORMModel(BaseModel):
@@ -45,12 +45,19 @@ class MessageOut(_ORMModel):
 
 
 class ExecutionCreate(BaseModel):
-    agent_id: str
+    agent_id: str | None = None
+    workflow_id: str | None = None
     input: str = ""
     conversation_id: str | None = None
     artifact_ids: list[str] = Field(default_factory=list)
     variables: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _require_target(self) -> ExecutionCreate:
+        if not self.agent_id and not self.workflow_id:
+            raise ValueError("agent_id or workflow_id is required")
+        return self
 
 
 class ExecutionOut(_ORMModel):
@@ -58,6 +65,8 @@ class ExecutionOut(_ORMModel):
     agent_id: str
     agent_version_id: str
     agent_version: int
+    workflow_id: str | None = None
+    workflow_version_id: str | None = None
     user_id: str
     conversation_id: str | None
     mode: str

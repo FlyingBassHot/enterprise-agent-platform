@@ -32,6 +32,10 @@ import type {
   MCPSyncResult,
   SkillInfo,
   SkillVersionInfo,
+  WorkflowDefinition,
+  WorkflowInfo,
+  WorkflowValidation,
+  WorkflowVersionInfo,
   ToolCallRecord,
   UserInfo,
 } from '@/types/api'
@@ -124,7 +128,8 @@ export const toolsApi = {
 
 export const executionsApi = {
   create: (payload: {
-    agent_id: string
+    agent_id?: string
+    workflow_id?: string
     input: string
     conversation_id?: string | null
     artifact_ids?: string[]
@@ -145,6 +150,30 @@ export const executionsApi = {
     client.post<ExecutionInfo>(`/executions/${id}/resume`).then((r) => r.data),
   toolCalls: (id: string) =>
     client.get<ToolCallRecord[]>(`/executions/${id}/tool-calls`).then((r) => r.data),
+}
+
+export const workflowApi = {
+  list: () => client.get<WorkflowInfo[]>('/workflows').then((r) => r.data),
+  create: (payload: { name: string; description: string; definition: WorkflowDefinition }) =>
+    client.post<WorkflowInfo>('/workflows', payload).then((r) => r.data),
+  get: (id: string) => client.get<WorkflowInfo>(`/workflows/${id}`).then((r) => r.data),
+  update: (
+    id: string,
+    payload: { name?: string; description?: string; definition?: WorkflowDefinition },
+  ) => client.put<WorkflowInfo>(`/workflows/${id}`, payload).then((r) => r.data),
+  remove: (id: string) => client.delete(`/workflows/${id}`),
+  validate: (id: string) =>
+    client.post<WorkflowValidation>(`/workflows/${id}/validate`).then((r) => r.data),
+  publish: (id: string) =>
+    client.post<WorkflowInfo>(`/workflows/${id}/publish`).then((r) => r.data),
+  disable: (id: string) =>
+    client.post<WorkflowInfo>(`/workflows/${id}/disable`).then((r) => r.data),
+  versions: (id: string) =>
+    client.get<WorkflowVersionInfo[]>(`/workflows/${id}/versions`).then((r) => r.data),
+  execute: (
+    id: string,
+    payload: { input: string; variables?: Record<string, unknown>; metadata?: Record<string, unknown> },
+  ) => client.post<ExecutionInfo>(`/workflows/${id}/execute`, payload).then((r) => r.data),
 }
 
 export const conversationsApi = {

@@ -6,7 +6,7 @@ import { ArrowLeft, View } from '@element-plus/icons-vue'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import client from '@/api/client'
-import { agentsApi, knowledgeApi, modelsApi, promptsApi, skillsApi, usersApi } from '@/api/platform'
+import { agentsApi, knowledgeApi, modelsApi, promptsApi, skillsApi, usersApi, workflowApi } from '@/api/platform'
 import { useAuthStore } from '@/stores/auth'
 import type {
   AgentConfig,
@@ -20,6 +20,7 @@ import type {
   ResolvedPrompt,
   RoleInfo,
   SkillInfo,
+  WorkflowInfo,
 } from '@/types/api'
 import { formatDate, shortId } from '@/utils/format'
 
@@ -63,6 +64,8 @@ const knowledgeBases = ref<KnowledgeBaseInfo[]>([])
 const knowledgeLoading = ref(false)
 const skills = ref<SkillInfo[]>([])
 const skillsLoading = ref(false)
+const workflows = ref<WorkflowInfo[]>([])
+const workflowsLoading = ref(false)
 const permissions = ref<PermissionInfo[]>([])
 const roles = ref<RoleInfo[]>([])
 
@@ -132,6 +135,20 @@ const selectedSkillList = computed(() =>
     .filter((skill): skill is SkillInfo => Boolean(skill)),
 )
 
+const publishedWorkflows = computed(() =>
+  workflows.value.filter((workflow) => workflow.status === 'published'),
+)
+
+function onExecutionModeChange(mode: string) {
+  if (mode === 'agent') {
+    config.value.execution.workflow_id = null
+    return
+  }
+  if (!config.value.execution.workflow_id) {
+    config.value.execution.workflow_id = publishedWorkflows.value[0]?.id || null
+  }
+}
+
 function scopeLabel(scope: string): string {
   const map: Record<string, string> = {
     public: '公开',
@@ -151,6 +168,7 @@ function emptyConfig(): AgentConfig {
     retrieval: { enabled: true, top_k: 5 },
     execution: {
       mode: 'agent',
+      workflow_id: null,
       max_iterations: 12,
       timeout_seconds: 600,
       approval_risk_levels: ['high', 'critical'],
@@ -175,14 +193,16 @@ async function loadOptions() {
   toolsLoading.value = true
   knowledgeLoading.value = true
   skillsLoading.value = true
+  workflowsLoading.value = true
 
-  const [modelResult, promptResult, toolResult, knowledgeResult, skillResult] =
+  const [modelResult, promptResult, toolResult, knowledgeResult, skillResult, workflowResult] =
     await Promise.allSettled([
       modelsApi.configs(),
       promptsApi.list(),
       client.get<ToolOption[]>('/tools').then((response) => response.data),
       knowledgeApi.listBases(),
       skillsApi.list(),
+      workflowApi.list(),
     ])
 
   if (modelResult.status === 'fulfilled') {
@@ -207,6 +227,9 @@ async function loadOptions() {
 
   if (skillResult.status === 'fulfilled') skills.value = skillResult.value
   skillsLoading.value = false
+
+  if (workflowResult.status === 'fulfilled') workflows.value = workflowResult.value
+  workflowsLoading.value = false
 
   if (canManageRoles.value) {
     const [permissionResult, roleResult] = await Promise.allSettled([
@@ -809,13 +832,19 @@ onMounted(async () => {
       <div class="card">
         <div class="section-head">
           <h3>执行策略</h3>
-          <span class="muted">Agent 模式固定为 agent，服务端强制执行迭代与超时上限</span>
+          <span class="muted">支持 Agent、工作流与混合模式；服务端强制执行迭代与超时上限</span>
         </div>
         <div class="grid-3">
           <el-form-item label="执行模式">
-            <el-input model-value="agent" disabled>
-              <template #append>固定</template>
-            </el-input>
+            <el-select
+              v-model="config.execution.mode"
+              class="full"
+              @change="onExecutionModeChange"
+            >
+              <el-option label="Agent 直接执行" value="agent" />
+              <el-option label="工作流执行" value="workflow" />
+              <el-option label="混合模式" value="hybrid" />
+            </el-select>
           </el-form-item>
           <el-form-item label="最大迭代次数">
             <el-input-number
@@ -835,6 +864,30 @@ onMounted(async () => {
             />
           </el-form-item>
         </div>
+        <el-form-item
+          v-if="config.execution.mode !== 'agent'"
+          label="绑定工作流"
+          required
+        >
+          <el-select
+            v-model="config.execution.workflow_id"
+            filterable
+            clearable
+            :loading="workflowsLoading"
+            placeholder="选择已发布的工作流"
+            class="full"
+          >
+            <el-option
+              v-for="workflow in publishedWorkflows"
+              :key="workflow.id"
+              :label="`${workflow.name} · v${workflow.current_version ?? '-'}`"
+              :value="workflow.id"
+            />
+          </el-select>
+          <div v-if="!workflowsLoading && !publishedWorkflows.length" class="inline-hint muted">
+            暂无已发布工作流，请先在「工作流」中发布后再绑定。
+          </div>
+        </el-form-item>
         <el-form-item label="需人工审批的风险等级">
           <el-checkbox-group v-model="config.execution.approval_risk_levels">
             <el-checkbox v-for="level in riskLevels" :key="level.value" :value="level.value">

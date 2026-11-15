@@ -206,7 +206,11 @@ class ExecutionService:
         return [MessageOut.model_validate(row) for row in rows]
 
     async def _resolve_conversation(
-        self, actor: UserContext, snapshot: AgentSnapshot, payload: ExecutionCreate
+        self,
+        actor: UserContext,
+        agent_id: str,
+        agent_name: str,
+        payload: ExecutionCreate,
     ):
         if payload.conversation_id:
             conversation = await self.repo.get_conversation(payload.conversation_id)
@@ -214,12 +218,12 @@ class ExecutionService:
                 raise NotFoundError(f"Conversation {payload.conversation_id} not found")
             if not actor.is_superuser and conversation.user_id != actor.user_id:
                 raise PermissionDeniedError("Conversation belongs to another user")
-            if conversation.agent_id != snapshot.agent_id:
-                raise ConflictError("Conversation belongs to a different agent")
+            if conversation.agent_id != agent_id:
+                raise ConflictError("Conversation belongs to a different agent/workflow")
             return conversation
-        title = (payload.input or snapshot.agent_name or "新对话").strip().splitlines()[0][:120]
+        title = (payload.input or agent_name or "新对话").strip().splitlines()[0][:120]
         return await self.repo.create_conversation(
-            agent_id=snapshot.agent_id, user_id=actor.user_id, title=title or "新对话"
+            agent_id=agent_id, user_id=actor.user_id, title=title or "新对话"
         )
 
     # ------------------------------------------------------------------ artifacts
@@ -252,14 +256,60 @@ class ExecutionService:
     async def create_execution(
         self, actor: UserContext, payload: ExecutionCreate
     ) -> ExecutionOut:
-        self._require(actor, "agents:write", "executions:write")
-        loader = self._agent_loader
-        if loader is None:
-            loader = _agent_service(self.db)
-        snapshot = await loader.load_published(payload.agent_id)
-        self._check_agent_access(actor, snapshot)
+        self._require(actor, "executions:write")
+        from app.modules.workflow.service import WorkflowService
 
-        conversation = await self._resolve_conversation(actor, snapshot, payload)
+        snapshot: AgentSnapshot | None = None
+        workflow_snapshot = None
+        if payload.agent_id:
+            self._require(actor, "agents:write")
+            loader = self._agent_loader
+            if loader is None:
+                loader = _agent_service(self.db)
+            snapshot = await loader.load_published(payload.agent_id)
+            self._check_agent_access(actor, snapshot)
+            if snapshot.mode in {"workflow", "hybrid"}:
+                if not snapshot.workflow_id:
+                    raise ValidationError("Agent workflow mode has no workflow binding")
+                if payload.workflow_id and payload.workflow_id != snapshot.workflow_id:
+                    raise ConflictError("workflow_id does not match the Agent snapshot")
+                workflow_snapshot = await WorkflowService(self.db).load_version(
+                    snapshot.workflow_id, snapshot.workflow_version_id
+                )
+            elif payload.workflow_id:
+                raise ValidationError("workflow_id is not allowed for agent-mode executions")
+        else:
+            self._require(actor, "workflows:read")
+            workflow_snapshot = await WorkflowService(self.db).load_published(
+                payload.workflow_id  # type: ignore[arg-type]
+            )
+            if not actor.is_superuser and workflow_snapshot.owner_id != actor.user_id:
+                await PermissionService(self.db).require_resource_access(
+                    actor,
+                    resource_type="workflow",
+                    resource_id=workflow_snapshot.workflow_id,
+                    action="read",
+                    owner_id=workflow_snapshot.owner_id,
+                )
+
+        if snapshot is not None:
+            conversation_agent_id = snapshot.agent_id
+            conversation_title = snapshot.agent_name
+            agent_id = snapshot.agent_id
+            agent_version_id = snapshot.version_id
+            agent_version = snapshot.version
+            mode = snapshot.mode or "agent"
+        else:
+            conversation_agent_id = f"workflow:{workflow_snapshot.workflow_id}"
+            conversation_title = workflow_snapshot.workflow_name
+            agent_id = ""
+            agent_version_id = ""
+            agent_version = 0
+            mode = "workflow"
+
+        conversation = await self._resolve_conversation(
+            actor, conversation_agent_id, conversation_title, payload
+        )
         attachments = await self._load_attachments(actor, payload.artifact_ids)
         user_text = render_user_text(payload.input, attachments)
 
@@ -269,12 +319,16 @@ class ExecutionService:
             trace_id = new_id()
         execution = AgentExecution(
             id=execution_id,
-            agent_id=snapshot.agent_id,
-            agent_version_id=snapshot.version_id,
-            agent_version=snapshot.version,
+            agent_id=agent_id,
+            agent_version_id=agent_version_id,
+            agent_version=agent_version,
+            workflow_id=workflow_snapshot.workflow_id if workflow_snapshot else None,
+            workflow_version_id=(
+                workflow_snapshot.version_id if workflow_snapshot else None
+            ),
             user_id=actor.user_id,
             conversation_id=conversation.id,
-            mode=snapshot.mode or "agent",
+            mode=mode,
             status=ExecutionStatus.PENDING.value,
             input_text=user_text,
             input_payload={
@@ -283,6 +337,7 @@ class ExecutionService:
                 "attachments": attachments,
                 "variables": payload.variables,
                 "metadata": payload.metadata,
+                "workflow_id": workflow_snapshot.workflow_id if workflow_snapshot else None,
             },
             trace_id=trace_id,
             token_usage={},
@@ -295,6 +350,23 @@ class ExecutionService:
             execution_id=execution_id,
         )
         await self.db.commit()
+
+        if workflow_snapshot is not None:
+            try:
+                await self._workflow_service().record_execution(
+                    workflow_id=workflow_snapshot.workflow_id,
+                    user_id=actor.user_id,
+                    workflow_version_id=workflow_snapshot.version_id,
+                    execution_id=execution_id,
+                    status="pending",
+                    input={
+                        "input": payload.input,
+                        "variables": payload.variables,
+                        "artifact_ids": list(payload.artifact_ids),
+                    },
+                )
+            except Exception:  # noqa: BLE001 - auxiliary execution index
+                logger.exception("failed to record workflow execution")
 
         self._schedule(execution_id, actor, mode="start")
         return ExecutionOut.model_validate(execution)
@@ -366,6 +438,7 @@ class ExecutionService:
         execution.status = ExecutionStatus.CANCELLED.value
         execution.finished_at = now
         await self.db.commit()
+        await self._sync_workflow_execution(execution_id, "cancelled")
 
         await ExecutionEventSink(self.session_factory, execution_id, broker=self.broker).emit(
             "execution_cancelled", {"reason": "cancelled by user", "by": actor.user_id}
@@ -632,33 +705,62 @@ class ExecutionService:
                     skill_gateway,
                     knowledge_gateway,
                 ) = await self._gateways(stack)
-                snapshot = await loader.load_published(execution.agent_id)
                 history = await self._history(execution)
-                runtime = RuntimeService(
-                    model_gateway=model_gateway,
-                    tool_gateway=tool_gateway,
-                    sink=sink,
-                    skill_gateway=skill_gateway,
-                    knowledge_gateway=knowledge_gateway,
-                    checkpointer=self._checkpointer,
-                )
-                if mode == "start":
-                    result = await runtime.run(
-                        execution_id=execution_id,
-                        snapshot=snapshot,
-                        user=actor,
-                        history=history,
-                        user_text=execution.input_text,
-                        variables=(execution.input_payload or {}).get("variables") or {},
+                workflow_snapshot = await self._workflow_snapshot_for(execution)
+                if workflow_snapshot is not None:
+                    from app.modules.workflow.executor import WorkflowRuntime
+
+                    runtime = WorkflowRuntime(
+                        model_gateway=model_gateway,
+                        tool_gateway=tool_gateway,
+                        knowledge_gateway=knowledge_gateway,
+                        agent_loader=loader,
+                        sink=sink,
+                        checkpointer=self._checkpointer,
                     )
+                    if mode == "start":
+                        result = await runtime.run(
+                            execution_id=execution_id,
+                            snapshot=workflow_snapshot,
+                            user=actor,
+                            input_text=execution.input_text,
+                            variables=(execution.input_payload or {}).get("variables") or {},
+                        )
+                    else:
+                        result = await runtime.resume(
+                            execution_id=execution_id,
+                            snapshot=workflow_snapshot,
+                            user=actor,
+                            decision=decision,
+                            interrupt_id=interrupt_id,
+                        )
                 else:
-                    result = await runtime.resume(
-                        execution_id=execution_id,
-                        user=actor,
-                        snapshot=snapshot,
-                        decision=decision,
-                        interrupt_id=interrupt_id,
+                    snapshot = await loader.load_published(execution.agent_id)
+                    runtime = RuntimeService(
+                        model_gateway=model_gateway,
+                        tool_gateway=tool_gateway,
+                        sink=sink,
+                        skill_gateway=skill_gateway,
+                        knowledge_gateway=knowledge_gateway,
+                        checkpointer=self._checkpointer,
                     )
+                    if mode == "start":
+                        result = await runtime.run(
+                            execution_id=execution_id,
+                            snapshot=snapshot,
+                            user=actor,
+                            history=history,
+                            user_text=execution.input_text,
+                            variables=(execution.input_payload or {}).get("variables") or {},
+                        )
+                    else:
+                        result = await runtime.resume(
+                            execution_id=execution_id,
+                            user=actor,
+                            snapshot=snapshot,
+                            decision=decision,
+                            interrupt_id=interrupt_id,
+                        )
             await self._apply_result(execution_id, result, sink)
         except asyncio.CancelledError:
             await self._ensure_cancelled(execution_id)
@@ -702,6 +804,47 @@ class ExecutionService:
             knowledge_gateway = self._knowledge_gateway
         return model_gateway, tool_gateway, loader, skill_gateway, knowledge_gateway
 
+    def _workflow_service(self):
+        from app.modules.workflow.service import WorkflowService
+
+        return WorkflowService(self.db)
+
+    async def _sync_workflow_execution(
+        self,
+        execution_id: str,
+        status: str,
+        *,
+        output: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        execution = await self.repo.get_execution(execution_id)
+        if execution is None or not execution.workflow_id:
+            return
+        try:
+            await self._workflow_service().update_execution(
+                execution_id,
+                status=status,
+                output=output,
+                error=error,
+                finished_at=_now()
+                if status in {"completed", "failed", "cancelled"}
+                else None,
+            )
+        except Exception:  # noqa: BLE001 - auxiliary execution index
+            logger.exception("failed to update workflow execution")
+
+    async def _workflow_snapshot_for(self, execution: AgentExecution):
+        if not execution.workflow_id:
+            return None
+        from app.modules.workflow.service import WorkflowService
+
+        service = WorkflowService(self.db)
+        if execution.workflow_version_id:
+            return await service.load_version(
+                execution.workflow_id, execution.workflow_version_id
+            )
+        return await service.load_published(execution.workflow_id)
+
     async def _history(self, execution: AgentExecution) -> list[ChatMessage]:
         if not execution.conversation_id:
             return []
@@ -739,6 +882,9 @@ class ExecutionService:
         if result.status == "waiting_approval":
             execution.status = ExecutionStatus.WAITING_APPROVAL.value
             await self.db.commit()
+            await self._sync_workflow_execution(
+                execution_id, "waiting_approval"
+            )
             return
 
         if result.status == "completed":
@@ -753,6 +899,11 @@ class ExecutionService:
                     execution_id=execution.id,
                 )
             await self.db.commit()
+            await self._sync_workflow_execution(
+                execution_id,
+                "completed",
+                output={"text": execution.output_text, **(execution.output_payload or {})},
+            )
             await sink.emit(
                 "execution_completed",
                 {
@@ -769,6 +920,9 @@ class ExecutionService:
         execution.error = result.error or "execution failed"
         execution.finished_at = _now()
         await self.db.commit()
+        await self._sync_workflow_execution(
+            execution_id, "failed", error=execution.error
+        )
         await sink.emit(
             "execution_failed",
             {

@@ -109,6 +109,13 @@ class AgentService:
         tool_versions = {
             descriptor.name: descriptor.version for descriptor in tool_descriptors
         }
+        workflow_snapshot = None
+        if config.execution.mode in {"workflow", "hybrid"}:
+            from app.modules.workflow.service import WorkflowService
+
+            workflow_snapshot = await WorkflowService(self.db).validate_agent_binding(
+                config.execution.workflow_id, actor  # type: ignore[arg-type]
+            )
         now = datetime.now(UTC)
         version_number = await self.repo.next_version_number(agent.id)
         version_id = new_id()
@@ -118,7 +125,7 @@ class AgentService:
             version_id=version_id,
             version=version_number,
             owner_id=agent.owner_id,
-            mode="agent",
+            mode=config.execution.mode,
             model={
                 "config_id": config.model.config_id,
                 "temperature": config.model.temperature,
@@ -138,7 +145,12 @@ class AgentService:
             max_iterations=config.execution.max_iterations,
             timeout_seconds=config.execution.timeout_seconds,
             approval_risk_levels=list(config.execution.approval_risk_levels),
-            workflow_id=None,
+            workflow_id=(
+                workflow_snapshot.workflow_id if workflow_snapshot else None
+            ),
+            workflow_version_id=(
+                workflow_snapshot.version_id if workflow_snapshot else None
+            ),
             required_permissions=list(config.permissions.required_permissions),
             allowed_roles=list(config.permissions.allowed_roles),
             metadata=dict(config.metadata),
@@ -255,6 +267,21 @@ class AgentService:
                 if disabled:
                     errors.append("Tools disabled: " + ", ".join(disabled))
 
+        if config.execution.mode in {"workflow", "hybrid"}:
+            if not config.execution.workflow_id:
+                errors.append("Execution mode requires a workflow_id")
+            else:
+                try:
+                    from app.modules.workflow.service import WorkflowService
+
+                    await WorkflowService(self.db).validate_agent_binding(
+                        config.execution.workflow_id, actor
+                    )
+                except AppError as exc:
+                    errors.append(f"Workflow: {exc.message}")
+        elif config.execution.workflow_id:
+            errors.append("workflow_id is only allowed for workflow/hybrid mode")
+
         if config.knowledge_base_ids:
             try:
                 from app.modules.knowledge.service import KnowledgeService
@@ -342,6 +369,11 @@ class AgentService:
         from app.modules.model.service import ModelService
 
         return ModelService(self.db)
+
+    def _workflow_service(self):  # noqa: ANN202
+        from app.modules.workflow.service import WorkflowService
+
+        return WorkflowService(self.db)
 
     def _knowledge_service(self):  # noqa: ANN202
         from app.modules.knowledge.service import KnowledgeService

@@ -50,6 +50,9 @@ SYSTEM_PERMISSIONS: list[tuple[str, str, str]] = [
     ("knowledge:write", "管理知识库与文档", "knowledge"),
     ("skills:read", "查看 Skill", "skill"),
     ("skills:write", "同步与启停 Skill", "skill"),
+    ("workflows:read", "查看工作流", "workflow"),
+    ("workflows:write", "编辑工作流", "workflow"),
+    ("workflows:publish", "发布工作流", "workflow"),
 ]
 
 ROLE_PERMISSIONS: dict[str, set[str] | None] = {
@@ -74,6 +77,9 @@ ROLE_PERMISSIONS: dict[str, set[str] | None] = {
         "knowledge:read",
         "knowledge:write",
         "skills:read",
+        "workflows:read",
+        "workflows:write",
+        "workflows:publish",
     },
     "viewer": {
         "agents:read",
@@ -86,6 +92,7 @@ ROLE_PERMISSIONS: dict[str, set[str] | None] = {
         "audit:read",
         "knowledge:read",
         "skills:read",
+        "workflows:read",
     },
 }
 
