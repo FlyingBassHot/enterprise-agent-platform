@@ -10,6 +10,13 @@ from app.modules.execution.models import (
     LLMCall,
     Message,
 )
+from app.modules.knowledge.models import (
+    Document,
+    DocumentChunk,
+    DocumentVersion,
+    EmbeddingRecord,
+    KnowledgeBase,
+)
 from app.modules.model.models import ModelConfig, ModelProvider
 from app.modules.permission.models import (
     Permission,
@@ -20,7 +27,14 @@ from app.modules.permission.models import (
     UserRole,
 )
 from app.modules.prompt.models import Prompt, PromptVersion
-from app.modules.tool.models import Tool, ToolExecution, ToolPermission, ToolVersion
+from app.modules.skill.models import Skill, SkillDependency, SkillVersion
+from app.modules.tool.models import (
+    MCPServer,
+    Tool,
+    ToolExecution,
+    ToolPermission,
+    ToolVersion,
+)
 
 __all__ = [
     "Agent",
@@ -29,7 +43,13 @@ __all__ = [
     "ApprovalRequest",
     "Artifact",
     "Conversation",
+    "Document",
+    "DocumentChunk",
+    "DocumentVersion",
+    "EmbeddingRecord",
     "ExecutionEvent",
+    "KnowledgeBase",
+    "MCPServer",
     "LLMCall",
     "Message",
     "ModelConfig",
@@ -40,6 +60,9 @@ __all__ = [
     "ResourcePermission",
     "Role",
     "RolePermission",
+    "Skill",
+    "SkillDependency",
+    "SkillVersion",
     "Tool",
     "ToolExecution",
     "ToolPermission",

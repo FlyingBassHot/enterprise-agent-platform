@@ -40,6 +40,18 @@ const router = createRouter({
           meta: { title: '编辑 Agent', permission: 'agents:write' },
         },
         {
+          path: 'knowledge',
+          name: 'knowledge',
+          component: () => import('@/views/knowledge/KnowledgeView.vue'),
+          meta: { title: '知识库', permission: 'knowledge:read' },
+        },
+        {
+          path: 'skills',
+          name: 'skills',
+          component: () => import('@/views/skill/SkillListView.vue'),
+          meta: { title: 'Skill 管理', permission: 'skills:read' },
+        },
+        {
           path: 'prompts',
           name: 'prompts',
           component: () => import('@/views/prompt/PromptListView.vue'),

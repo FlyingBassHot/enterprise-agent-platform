@@ -14,11 +14,17 @@ import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import JsonBlock from '@/components/JsonBlock.vue'
 import MetricCard from '@/components/MetricCard.vue'
+import KnowledgeCitations from '@/components/KnowledgeCitations.vue'
 import { agentsApi, artifactsApi, auditApi, executionsApi } from '@/api/platform'
 import {
   useExecutionStream,
   type ExecutionEventDto,
 } from '@/composables/useExecutionStream'
+import {
+  mergeKnowledgeCitations,
+  parseKnowledgeCitations,
+  type KnowledgeCitation,
+} from '@/components/knowledgeCitations'
 import { useAuthStore } from '@/stores/auth'
 import type {
   AgentInfo,
@@ -85,6 +91,7 @@ const runError = ref('')
 const settling = ref(false)
 
 const execution = ref<ExecutionInfo | null>(null)
+const knowledgeCitations = ref<KnowledgeCitation[]>([])
 const runStatus = ref('')
 const events = ref<ExecutionEventInfo[]>([])
 const toolCalls = ref<ToolCallRecord[]>([])
@@ -432,6 +439,16 @@ async function downloadSample() {
   }
 }
 
+function citationsFromEvents(list: ExecutionEventInfo[]): KnowledgeCitation[] {
+  const collected: KnowledgeCitation[] = []
+  for (const event of list) {
+    if (event.type === 'knowledge_retrieved') {
+      collected.push(...parseKnowledgeCitations(event.payload.citations))
+    }
+  }
+  return collected
+}
+
 function appendEvent(event: ExecutionEventDto): boolean {
   if (event.seq > streamSeq.value) streamSeq.value = event.seq
   if (events.value.some((item) => item.seq === event.seq)) return false
@@ -469,6 +486,16 @@ function handleStreamEvent(event: ExecutionEventDto) {
     case 'tool_call_completed':
       if (!finished.value) runStatus.value = 'running'
       break
+    case 'knowledge_retrieved': {
+      const incoming = parseKnowledgeCitations(payload.citations)
+      if (incoming.length) {
+        knowledgeCitations.value = mergeKnowledgeCitations(
+          knowledgeCitations.value,
+          incoming,
+        )
+      }
+      break
+    }
     case 'approval_required':
       runStatus.value = 'waiting_approval'
       break
@@ -526,6 +553,11 @@ async function loadRunData() {
     const detail = await executionsApi.get(id)
     if (execution.value?.id !== id) return
     execution.value = detail
+    knowledgeCitations.value = mergeKnowledgeCitations(
+      knowledgeCitations.value,
+      parseKnowledgeCitations(detail.output_payload?.knowledge_citations),
+      citationsFromEvents(events.value),
+    )
     runStatus.value = detail.status
   } catch (err) {
     if (execution.value?.id === id) runError.value = describeError(err)
@@ -595,6 +627,7 @@ async function startDemo() {
   streamSeq.value = 0
   assistantText.value = ''
   execution.value = null
+  knowledgeCitations.value = []
   runStatus.value = ''
   uploadedArtifact.value = null
   starting.value = true
@@ -915,6 +948,12 @@ onBeforeUnmount(() => {
           </el-button>
         </div>
       </div>
+
+      <KnowledgeCitations
+        v-if="knowledgeCitations.length"
+        :citations="knowledgeCitations"
+        title="审计规则知识引用"
+      />
 
       <el-alert
         v-if="toolCallsError"

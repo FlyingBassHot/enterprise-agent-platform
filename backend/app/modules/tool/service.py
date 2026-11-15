@@ -33,7 +33,14 @@ from app.modules.tool.exceptions import (
     ToolExecutionError,
     ToolTimeoutError,
 )
-from app.modules.tool.models import Tool, ToolExecution, ToolPermission, ToolVersion
+from app.modules.tool.mcp_client import call_mcp_tool
+from app.modules.tool.models import (
+    MCPServer,
+    Tool,
+    ToolExecution,
+    ToolPermission,
+    ToolVersion,
+)
 from app.modules.tool.registry import native_registry
 from app.modules.tool.repository import ToolRepository
 from app.modules.tool.schemas import (
@@ -232,6 +239,16 @@ class ToolService(ToolGateway):
                 raise ToolDefinitionError(
                     f"Native tool security fields are code-owned: {', '.join(blocked)}"
                 )
+        if tool.source_type == ToolSourceType.MCP.value:
+            # MCP tools mirror the remote server. Schemas and the discovery
+            # binding are owned by sync; operators tune policy metadata only.
+            protected = {"input_schema", "output_schema", "config"}
+            blocked = sorted(protected.intersection(data))
+            if blocked:
+                raise ToolDefinitionError(
+                    "MCP tool schemas and config are owned by server sync: "
+                    + ", ".join(blocked)
+                )
         if "config" in data:
             data["config"] = HttpToolConfig.model_validate(data["config"]).model_dump(
                 mode="json"
@@ -261,6 +278,11 @@ class ToolService(ToolGateway):
         tool = await self._load(tool_id)
         if tool.source_type == ToolSourceType.NATIVE.value:
             raise ToolDefinitionError("Native tools are managed by code and cannot be deleted")
+        if tool.source_type == ToolSourceType.MCP.value:
+            raise ToolDefinitionError(
+                "MCP tools are managed by server sync; remove the tool remotely or "
+                "delete/disable the MCP server instead"
+            )
         await self.db.delete(tool)
         await self.db.commit()
 
@@ -467,6 +489,24 @@ class ToolService(ToolGateway):
                 dict(arguments),
                 transport=self.http_transport,
                 timeout_seconds=timeout_seconds,
+            )
+        if tool.source_type == ToolSourceType.MCP.value:
+            config = tool.config or {}
+            server_id = config.get("server_id")
+            remote_name = config.get("remote_name")
+            if not isinstance(server_id, str) or not server_id:
+                raise ToolExecutionError(f"MCP tool {tool.name} has no server binding")
+            if not isinstance(remote_name, str) or not remote_name:
+                raise ToolExecutionError(f"MCP tool {tool.name} has no remote tool name")
+            server = await self.db.get(MCPServer, server_id)
+            if server is None:
+                raise ToolExecutionError(
+                    f"MCP server for tool {tool.name} no longer exists"
+                )
+            if not server.enabled:
+                raise ToolExecutionError(f"MCP server {server.name} is disabled")
+            return await call_mcp_tool(
+                server, remote_name, dict(arguments), timeout_seconds
             )
         raise ToolExecutionError(f"Unsupported tool source type: {tool.source_type}")
 

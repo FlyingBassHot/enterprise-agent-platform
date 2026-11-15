@@ -25,6 +25,7 @@ dependencies = [
     "cryptography>=44",
     "jsonschema>=4.23",
     "langgraph-checkpoint-sqlite>=2.0",
+    "mcp==2.3.0",
 ]
 
 [dependency-groups]

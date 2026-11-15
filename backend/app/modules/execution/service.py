@@ -15,6 +15,7 @@ from app.core.contracts import (
     AgentLoader,
     AgentSnapshot,
     ChatMessage,
+    KnowledgeGateway,
     ModelGateway,
     SkillGateway,
     ToolGateway,
@@ -85,6 +86,7 @@ class ExecutionService:
         tool_gateway: ToolGateway | None = None,
         model_gateway: ModelGateway | None = None,
         skill_gateway: SkillGateway | None = None,
+        knowledge_gateway: KnowledgeGateway | None = None,
         broker: ExecutionEventBroker | None = None,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         checkpointer: Any = None,
@@ -95,6 +97,7 @@ class ExecutionService:
         self._tool_gateway = tool_gateway
         self._model_gateway = model_gateway
         self._skill_gateway = skill_gateway
+        self._knowledge_gateway = knowledge_gateway
         self.broker = broker or get_broker()
         self.session_factory = session_factory or get_session_factory()
         self._checkpointer = checkpointer
@@ -573,6 +576,7 @@ class ExecutionService:
                 tool_gateway=self._tool_gateway,
                 model_gateway=self._model_gateway,
                 skill_gateway=self._skill_gateway,
+                knowledge_gateway=self._knowledge_gateway,
                 broker=self.broker,
                 session_factory=self.session_factory,
                 checkpointer=self._checkpointer,
@@ -621,14 +625,21 @@ class ExecutionService:
                     },
                 )
             async with contextlib.AsyncExitStack() as stack:
-                model_gateway, tool_gateway, loader = await self._gateways(stack)
+                (
+                    model_gateway,
+                    tool_gateway,
+                    loader,
+                    skill_gateway,
+                    knowledge_gateway,
+                ) = await self._gateways(stack)
                 snapshot = await loader.load_published(execution.agent_id)
                 history = await self._history(execution)
                 runtime = RuntimeService(
                     model_gateway=model_gateway,
                     tool_gateway=tool_gateway,
                     sink=sink,
-                    skill_gateway=self._skill_gateway,
+                    skill_gateway=skill_gateway,
+                    knowledge_gateway=knowledge_gateway,
                     checkpointer=self._checkpointer,
                 )
                 if mode == "start":
@@ -658,14 +669,38 @@ class ExecutionService:
 
     async def _gateways(
         self, stack: contextlib.AsyncExitStack
-    ) -> tuple[ModelGateway, ToolGateway, AgentLoader]:
-        if self._model_gateway and self._tool_gateway and self._agent_loader:
-            return self._model_gateway, self._tool_gateway, self._agent_loader
+    ) -> tuple[ModelGateway, ToolGateway, AgentLoader, SkillGateway | None, KnowledgeGateway | None]:
+        if (
+            self._model_gateway
+            and self._tool_gateway
+            and self._agent_loader
+            and self._skill_gateway
+            and self._knowledge_gateway
+        ):
+            return (
+                self._model_gateway,
+                self._tool_gateway,
+                self._agent_loader,
+                self._skill_gateway,
+                self._knowledge_gateway,
+            )
         db = await stack.enter_async_context(self.session_factory())
         model_gateway = self._model_gateway or _model_service(db)
         tool_gateway = self._tool_gateway or _tool_service(db)
         loader = self._agent_loader or _agent_service(db)
-        return model_gateway, tool_gateway, loader
+        if self._skill_gateway is None:
+            from app.modules.skill.service import SkillService
+
+            skill_gateway = SkillService(db)
+        else:
+            skill_gateway = self._skill_gateway
+        if self._knowledge_gateway is None:
+            from app.modules.knowledge.service import KnowledgeService
+
+            knowledge_gateway = KnowledgeService(db)
+        else:
+            knowledge_gateway = self._knowledge_gateway
+        return model_gateway, tool_gateway, loader, skill_gateway, knowledge_gateway
 
     async def _history(self, execution: AgentExecution) -> list[ChatMessage]:
         if not execution.conversation_id:

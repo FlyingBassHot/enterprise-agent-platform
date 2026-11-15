@@ -14,11 +14,17 @@ import StatusTag from '@/components/StatusTag.vue'
 import JsonBlock from '@/components/JsonBlock.vue'
 import MetricCard from '@/components/MetricCard.vue'
 import ExecutionTimeline from '@/components/ExecutionTimeline.vue'
+import KnowledgeCitations from '@/components/KnowledgeCitations.vue'
 import { agentsApi, approvalsApi, executionsApi } from '@/api/platform'
 import {
   useExecutionStream,
   type ExecutionEventDto,
 } from '@/composables/useExecutionStream'
+import {
+  mergeKnowledgeCitations,
+  parseKnowledgeCitations,
+  type KnowledgeCitation,
+} from '@/components/knowledgeCitations'
 import { useAuthStore } from '@/stores/auth'
 import type {
   AgentInfo,
@@ -40,6 +46,7 @@ const auth = useAuthStore()
 const detail = ref<ExecutionDetail | null>(null)
 const events = ref<ExecutionEventInfo[]>([])
 const toolCalls = ref<ToolCallRecord[]>([])
+const knowledgeCitations = ref<KnowledgeCitation[]>([])
 const agents = ref<AgentInfo[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -135,6 +142,28 @@ function maxSeq(): number {
   return events.value.reduce((max, item) => Math.max(max, item.seq), 0)
 }
 
+function citationsFromDetail(data: ExecutionDetail | null): KnowledgeCitation[] {
+  return parseKnowledgeCitations(data?.output_payload?.knowledge_citations)
+}
+
+function citationsFromEvents(list: ExecutionEventInfo[]): KnowledgeCitation[] {
+  const collected: KnowledgeCitation[] = []
+  for (const event of list) {
+    if (event.type === 'knowledge_retrieved') {
+      collected.push(...parseKnowledgeCitations(event.payload.citations))
+    }
+  }
+  return collected
+}
+
+function mergeCitations(data: ExecutionDetail | null) {
+  knowledgeCitations.value = mergeKnowledgeCitations(
+    knowledgeCitations.value,
+    citationsFromDetail(data),
+    citationsFromEvents(events.value),
+  )
+}
+
 function mergeEvent(event: ExecutionEventDto): boolean {
   if (events.value.some((item) => item.seq === event.seq)) return false
   events.value.push({
@@ -170,6 +199,15 @@ function handleStreamEvent(event: ExecutionEventDto) {
       detail.value = { ...detail.value, status: 'running' }
     }
   }
+  if (event.type === 'knowledge_retrieved') {
+    const incoming = parseKnowledgeCitations(event.payload.citations)
+    if (incoming.length) {
+      knowledgeCitations.value = mergeKnowledgeCitations(
+        knowledgeCitations.value,
+        incoming,
+      )
+    }
+  }
   if (event.type === 'tool_call_completed') {
     void loadToolCalls(executionId.value)
   }
@@ -189,6 +227,7 @@ async function reloadDetail() {
     const data = await executionsApi.get(id)
     if (executionId.value !== id) return
     detail.value = data
+    mergeCitations(data)
   } catch (err) {
     if (executionId.value === id) error.value = describeError(err)
   }
@@ -253,6 +292,10 @@ async function load() {
     if (token !== loadToken || executionId.value !== id) return
     detail.value = detailData
     events.value = eventList
+    knowledgeCitations.value = mergeKnowledgeCitations(
+      citationsFromDetail(detailData),
+      citationsFromEvents(eventList),
+    )
     startStreaming()
     void loadToolCalls(id)
   } catch (err) {
@@ -260,6 +303,7 @@ async function load() {
     detail.value = null
     events.value = []
     toolCalls.value = []
+    knowledgeCitations.value = []
     error.value = describeError(err)
   } finally {
     if (token === loadToken) loading.value = false
@@ -270,6 +314,7 @@ function resetAndLoad() {
   detail.value = null
   events.value = []
   toolCalls.value = []
+  knowledgeCitations.value = []
   toolCallsError.value = ''
   error.value = ''
   activeTab.value = 'events'
@@ -565,6 +610,12 @@ onBeforeUnmount(() => {
           <div v-else class="muted">暂无输出内容</div>
         </div>
       </div>
+
+      <KnowledgeCitations
+        v-if="knowledgeCitations.length"
+        :citations="knowledgeCitations"
+        title="知识引用"
+      />
 
       <div class="card">
         <el-tabs v-model="activeTab">

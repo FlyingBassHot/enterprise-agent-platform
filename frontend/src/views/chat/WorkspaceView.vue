@@ -6,6 +6,7 @@ import { Link, Plus, Promotion, Refresh, Upload } from '@element-plus/icons-vue'
 import MessageBubble from '@/components/MessageBubble.vue'
 import ToolCallCard from '@/components/ToolCallCard.vue'
 import ApprovalDialog from '@/components/ApprovalDialog.vue'
+import KnowledgeCitations from '@/components/KnowledgeCitations.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import {
   agentsApi,
@@ -24,6 +25,11 @@ import type {
   ExecutionDetail,
   ExecutionInfo,
 } from '@/types/api'
+import {
+  mergeKnowledgeCitations,
+  parseKnowledgeCitations,
+  type KnowledgeCitation,
+} from '@/components/knowledgeCitations'
 import { formatBytes, formatDate, shortId } from '@/utils/format'
 
 interface ChatMessage {
@@ -85,6 +91,7 @@ const executionDetail = ref<ExecutionDetail | null>(null)
 const liveStatus = ref('')
 const liveToolCalls = ref<LiveToolCall[]>([])
 const liveApprovals = ref<LiveApproval[]>([])
+const knowledgeCitations = ref<KnowledgeCitation[]>([])
 const approvalDialogVisible = ref(false)
 const decisionLoading = ref(false)
 const cancelLoading = ref(false)
@@ -251,6 +258,7 @@ function resetLiveState() {
   appliedSeq = 0
   liveToolCalls.value = []
   liveApprovals.value = []
+  knowledgeCitations.value = []
   approvalDialogVisible.value = false
   assistantDraftId.value = ''
   streamSeq.value = 0
@@ -318,6 +326,10 @@ async function finalizeExecution(nextStatus: string) {
     execution.value = detail
     liveStatus.value = detail.status
     seedApprovals(detail.approvals)
+    knowledgeCitations.value = mergeKnowledgeCitations(
+      knowledgeCitations.value,
+      parseKnowledgeCitations(detail.output_payload?.knowledge_citations),
+    )
     approvalDialogVisible.value = false
   } catch (err) {
     if (execution.value?.id === targetId) chatError.value = describeError(err)
@@ -470,6 +482,16 @@ function handleStreamEvent(event: ExecutionEventDto) {
       liveStatus.value = 'running'
       resolveApproval(payload)
       break
+    case 'knowledge_retrieved': {
+      const incoming = parseKnowledgeCitations(payload.citations)
+      if (incoming.length) {
+        knowledgeCitations.value = mergeKnowledgeCitations(
+          knowledgeCitations.value,
+          incoming,
+        )
+      }
+      break
+    }
     case 'execution_completed': {
       stopDraftStreaming()
       const output = String(payload.output ?? '')
@@ -800,6 +822,13 @@ onMounted(async () => {
               :pending="message.pending"
             />
 
+            <KnowledgeCitations
+              v-if="knowledgeCitations.length"
+              :citations="knowledgeCitations"
+              title="知识引用"
+              compact
+            />
+
             <div v-if="liveToolCalls.length" class="tool-stack">
               <div class="tool-stack-title">工具调用</div>
               <ToolCallCard
@@ -919,6 +948,10 @@ onMounted(async () => {
             <div class="meta-row">
               <span class="meta-label">事件数</span>
               <span class="meta-value">{{ eventCount }}</span>
+            </div>
+            <div class="meta-row">
+              <span class="meta-label">知识引用</span>
+              <span class="meta-value">{{ knowledgeCitations.length }}</span>
             </div>
             <div class="meta-row">
               <span class="meta-label">Tokens</span>

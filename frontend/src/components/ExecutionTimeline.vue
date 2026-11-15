@@ -31,6 +31,7 @@ const BADGES: Record<string, { label: string; type: TagType }> = {
   message_completed: { label: '消息完成', type: 'success' },
   tool_call_started: { label: '工具开始', type: 'warning' },
   tool_call_completed: { label: '工具完成', type: 'success' },
+  knowledge_retrieved: { label: '知识检索', type: 'info' },
   approval_required: { label: '待审批', type: 'warning' },
   approval_resolved: { label: '审批结果', type: 'info' },
   execution_completed: { label: '执行完成', type: 'success' },
@@ -71,6 +72,11 @@ function summary(event: TimelineEvent): string {
       ]
         .filter(Boolean)
         .join(' · ')
+    }
+    case 'knowledge_retrieved': {
+      const citations = Array.isArray(payload.citations) ? payload.citations : []
+      const count = typeof payload.count === 'number' ? payload.count : citations.length
+      return `${clip(payload.query, 60) || '知识检索'} · ${count} 条引用`
     }
     case 'approval_required':
       return `${payload.tool_name || '工具'} · 风险 ${payload.risk_level || '-'}`

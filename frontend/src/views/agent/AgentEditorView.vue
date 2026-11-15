@@ -6,18 +6,20 @@ import { ArrowLeft, View } from '@element-plus/icons-vue'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import client from '@/api/client'
-import { agentsApi, modelsApi, promptsApi, usersApi } from '@/api/platform'
+import { agentsApi, knowledgeApi, modelsApi, promptsApi, skillsApi, usersApi } from '@/api/platform'
 import { useAuthStore } from '@/stores/auth'
 import type {
   AgentConfig,
   AgentInfo,
   AgentValidation,
+  KnowledgeBaseInfo,
   ModelConfig,
   PermissionInfo,
   PromptInfo,
   PromptVersion,
   ResolvedPrompt,
   RoleInfo,
+  SkillInfo,
 } from '@/types/api'
 import { formatDate, shortId } from '@/utils/format'
 
@@ -57,6 +59,10 @@ const promptVersionsLoading = ref(false)
 const promptVersionsPromptId = ref('')
 const tools = ref<ToolOption[]>([])
 const toolsLoading = ref(false)
+const knowledgeBases = ref<KnowledgeBaseInfo[]>([])
+const knowledgeLoading = ref(false)
+const skills = ref<SkillInfo[]>([])
+const skillsLoading = ref(false)
 const permissions = ref<PermissionInfo[]>([])
 const roles = ref<RoleInfo[]>([])
 
@@ -108,11 +114,41 @@ const selectedToolList = computed(() =>
     .filter((tool): tool is ToolOption => Boolean(tool)),
 )
 
+const selectableKnowledgeBases = computed(() => {
+  const selected = new Set(config.value.knowledge_base_ids)
+  return knowledgeBases.value.filter(
+    (base) => base.status === 'active' || selected.has(base.id),
+  )
+})
+
+const selectableSkills = computed(() => {
+  const selected = new Set(config.value.skill_names)
+  return skills.value.filter((skill) => skill.enabled || selected.has(skill.name))
+})
+
+const selectedSkillList = computed(() =>
+  config.value.skill_names
+    .map((skillName) => skills.value.find((skill) => skill.name === skillName))
+    .filter((skill): skill is SkillInfo => Boolean(skill)),
+)
+
+function scopeLabel(scope: string): string {
+  const map: Record<string, string> = {
+    public: '公开',
+    department: '部门',
+    private: '私有',
+  }
+  return map[scope] || scope
+}
+
 function emptyConfig(): AgentConfig {
   return {
     model: { config_id: '', temperature: 0.2, max_tokens: 2048, top_p: 1 },
     prompt: { prompt_id: '', version_id: null, variables: {} },
     tools: [],
+    knowledge_base_ids: [],
+    skill_names: [],
+    retrieval: { enabled: true, top_k: 5 },
     execution: {
       mode: 'agent',
       max_iterations: 12,
@@ -137,12 +173,17 @@ async function loadOptions() {
   modelsLoading.value = true
   promptsLoading.value = true
   toolsLoading.value = true
+  knowledgeLoading.value = true
+  skillsLoading.value = true
 
-  const [modelResult, promptResult, toolResult] = await Promise.allSettled([
-    modelsApi.configs(),
-    promptsApi.list(),
-    client.get<ToolOption[]>('/tools').then((response) => response.data),
-  ])
+  const [modelResult, promptResult, toolResult, knowledgeResult, skillResult] =
+    await Promise.allSettled([
+      modelsApi.configs(),
+      promptsApi.list(),
+      client.get<ToolOption[]>('/tools').then((response) => response.data),
+      knowledgeApi.listBases(),
+      skillsApi.list(),
+    ])
 
   if (modelResult.status === 'fulfilled') {
     models.value = modelResult.value
@@ -160,6 +201,12 @@ async function loadOptions() {
 
   if (toolResult.status === 'fulfilled') tools.value = toolResult.value
   toolsLoading.value = false
+
+  if (knowledgeResult.status === 'fulfilled') knowledgeBases.value = knowledgeResult.value
+  knowledgeLoading.value = false
+
+  if (skillResult.status === 'fulfilled') skills.value = skillResult.value
+  skillsLoading.value = false
 
   if (canManageRoles.value) {
     const [permissionResult, roleResult] = await Promise.allSettled([
@@ -377,7 +424,7 @@ onMounted(async () => {
   <div class="page-stack">
     <PageHeader
       :title="isEdit ? '编辑 Agent' : '新建 Agent'"
-      subtitle="配置模型、Prompt、工具与执行策略；发布后将生成不可变版本快照"
+      subtitle="配置模型、Prompt、工具、知识与执行策略；发布后将生成不可变版本快照"
     >
       <template #actions>
         <el-button :icon="ArrowLeft" @click="goBack">返回</el-button>
@@ -642,6 +689,120 @@ onMounted(async () => {
         </div>
         <div v-if="!toolsLoading && !tools.length" class="inline-hint muted">
           暂无可用工具。
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-head">
+          <h3>知识与技能</h3>
+          <span class="muted">绑定知识库与 Skill；发布时由服务端校验可用性与权限</span>
+        </div>
+        <el-form-item label="知识库">
+          <el-select
+            v-model="config.knowledge_base_ids"
+            multiple
+            filterable
+            :loading="knowledgeLoading"
+            placeholder="选择知识库（可多选）"
+            class="full"
+          >
+            <el-option
+              v-for="base in selectableKnowledgeBases"
+              :key="base.id"
+              :label="base.name"
+              :value="base.id"
+            >
+              <div class="option-row">
+                <span>{{ base.name }}</span>
+                <span class="muted">{{ base.document_count ?? 0 }} 文档</span>
+                <el-tag size="small" effect="plain">{{ scopeLabel(base.access_scope) }}</el-tag>
+                <el-tag v-if="base.status !== 'active'" size="small" type="info" effect="plain">
+                  已停用
+                </el-tag>
+              </div>
+            </el-option>
+          </el-select>
+          <div v-if="!knowledgeLoading && !knowledgeBases.length" class="inline-hint muted">
+            暂无可用知识库，可先在「知识库」中创建并上传文档。
+          </div>
+        </el-form-item>
+
+        <div class="grid-2">
+          <el-form-item label="知识检索">
+            <el-switch
+              v-model="config.retrieval.enabled"
+              active-text="启用"
+              inactive-text="关闭"
+            />
+            <div class="inline-hint muted">关闭后不会向模型注入知识库检索结果。</div>
+          </el-form-item>
+          <el-form-item label="检索 Top K">
+            <el-input-number
+              v-model="config.retrieval.top_k"
+              :min="1"
+              :max="20"
+              :disabled="!config.retrieval.enabled"
+              class="full"
+            />
+          </el-form-item>
+        </div>
+
+        <el-form-item label="Skill">
+          <el-select
+            v-model="config.skill_names"
+            multiple
+            filterable
+            :loading="skillsLoading"
+            placeholder="选择 Skill（可多选）"
+            class="full"
+          >
+            <el-option
+              v-for="skill in selectableSkills"
+              :key="skill.id"
+              :label="`${skill.name} · v${skill.current_version}`"
+              :value="skill.name"
+            >
+              <div class="option-row">
+                <span>{{ skill.name }}</span>
+                <span class="muted">v{{ skill.current_version }}</span>
+                <el-tag v-if="skill.required_tools.length" size="small" effect="plain">
+                  {{ skill.required_tools.length }} 工具
+                </el-tag>
+                <el-tag
+                  v-if="skill.required_permissions.length"
+                  size="small"
+                  type="warning"
+                  effect="plain"
+                >
+                  {{ skill.required_permissions.length }} 权限
+                </el-tag>
+                <el-tag v-if="!skill.enabled" size="small" type="info" effect="plain">
+                  已停用
+                </el-tag>
+              </div>
+            </el-option>
+          </el-select>
+          <div v-if="!skillsLoading && !skills.length" class="inline-hint muted">
+            暂无 Skill，可先在「Skill 管理」中同步。
+          </div>
+        </el-form-item>
+
+        <div v-if="selectedSkillList.length" class="skill-chips">
+          <div v-for="skill in selectedSkillList" :key="skill.name" class="skill-chip">
+            <div class="skill-chip-head">
+              <span class="tool-name">{{ skill.name }}</span>
+              <span class="muted mono">v{{ skill.current_version }}</span>
+              <el-tag v-if="!skill.enabled" size="small" type="info" effect="plain">
+                已停用
+              </el-tag>
+            </div>
+            <div v-if="skill.required_tools.length" class="skill-req muted">
+              依赖工具：{{ skill.required_tools.join('、') }}
+            </div>
+            <div v-if="skill.required_permissions.length" class="skill-req muted">
+              所需权限：{{ skill.required_permissions.join('、') }}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -973,6 +1134,34 @@ onMounted(async () => {
 
 .tool-name {
   font-weight: 560;
+}
+
+.skill-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.skill-chip {
+  padding: 8px 12px;
+  border-radius: 9px;
+  background: #f8fafc;
+  border: 1px solid var(--app-border);
+  font-size: 12px;
+}
+
+.skill-chip-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.skill-req {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-word;
 }
 
 .readonly-tags {

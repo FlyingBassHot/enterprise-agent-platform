@@ -142,6 +142,9 @@ export interface AgentConfig {
   model: AgentModelBinding
   prompt: AgentPromptBinding
   tools: string[]
+  knowledge_base_ids: string[]
+  skill_names: string[]
+  retrieval: AgentKnowledgeSettings
   execution: AgentExecutionSettings
   permissions: AgentPermissionSettings
   metadata: Record<string, unknown>
@@ -344,4 +347,126 @@ export interface AuditReportResponse {
   markdown: string
   truncated: boolean
   summary: Record<string, unknown>
+}
+
+export interface KnowledgeBaseInfo {
+  id: string
+  name: string
+  description: string
+  owner_id: string
+  tenant_id: string
+  department_id: string | null
+  access_scope: 'public' | 'department' | 'private' | string
+  status: string
+  embedding_model: string
+  chunk_size: number
+  chunk_overlap: number
+  document_count?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface KnowledgeSearchResponse {
+  query: string
+  knowledge_base_ids: string[]
+  results: RetrievalResult[]
+}
+
+export interface KnowledgeDocumentInfo {
+  id: string
+  knowledge_base_id: string
+  owner_id: string
+  department_id: string | null
+  tenant_id: string
+  filename: string
+  content_type: string
+  size: number
+  status: string
+  version: number
+  error: string | null
+  metadata: Record<string, unknown>
+  access_scope: string
+  chunk_count?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface KnowledgeDocumentChunk {
+  id: string
+  document_id: string
+  version: number
+  chunk_index: number
+  content: string
+  char_count: number
+  metadata: Record<string, unknown>
+}
+
+export interface RetrievalResult {
+  chunk_id: string
+  document_id: string
+  document_title: string
+  knowledge_base_id: string
+  content: string
+  score: number
+  metadata: Record<string, unknown>
+}
+
+export interface SkillInfo {
+  id: string
+  name: string
+  description: string
+  version: string
+  current_version: number
+  enabled: boolean
+  source_path: string | null
+  required_tools: string[]
+  required_permissions: string[]
+  inputs: string[]
+  outputs: string[]
+  metadata: Record<string, unknown>
+  instructions?: string
+  dependencies?: Array<{ id: string; kind: string; ref: string }>
+  created_at: string
+  updated_at: string
+}
+
+export interface SkillVersionInfo {
+  id: string
+  skill_id: string
+  version: number
+  content: string
+  snapshot: Record<string, unknown>
+  created_at: string
+}
+
+export interface AgentKnowledgeSettings {
+  enabled: boolean
+  top_k: number
+}
+
+export interface MCPServerInfo {
+  id: string
+  name: string
+  transport: 'stdio' | 'http' | string
+  command: string | null
+  args: string[]
+  env: Record<string, string>
+  url: string | null
+  headers: Record<string, string>
+  enabled: boolean
+  last_sync_at: string | null
+  last_error: string | null
+  created_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface MCPSyncResult {
+  server_id: string
+  server_name: string
+  created: number
+  updated: number
+  unchanged: number
+  disabled: number
+  tools: ToolInfo[]
 }

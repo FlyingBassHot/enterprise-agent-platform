@@ -5,9 +5,9 @@ import { Plus, Refresh } from '@element-plus/icons-vue'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import JsonBlock from '@/components/JsonBlock.vue'
-import { toolsApi } from '@/api/platform'
+import { toolsApi, mcpApi } from '@/api/platform'
 import { useAuthStore } from '@/stores/auth'
-import type { ToolInfo, ToolTestResult } from '@/types/api'
+import type { MCPServerInfo, MCPSyncResult, ToolInfo, ToolTestResult } from '@/types/api'
 import { formatDate, shortId } from '@/utils/format'
 
 interface ToolFormState {
@@ -26,7 +26,20 @@ interface ToolFormState {
   timeout_seconds: number
 }
 
+interface McpFormState {
+  name: string
+  transport: 'stdio' | 'http'
+  command: string
+  argsText: string
+  envText: string
+  url: string
+  headersText: string
+  enabled: boolean
+}
+
 const auth = useAuthStore()
+
+const activeTab = ref<'tools' | 'mcp'>('tools')
 
 const tools = ref<ToolInfo[]>([])
 const loading = ref(false)
@@ -50,6 +63,28 @@ const testing = ref(false)
 const testResult = ref<ToolTestResult | null>(null)
 const testRunError = ref('')
 
+const mcpServers = ref<MCPServerInfo[]>([])
+const mcpLoading = ref(false)
+const mcpError = ref('')
+const mcpSyncingId = ref('')
+const mcpTogglingId = ref('')
+
+const mcpDialogVisible = ref(false)
+const editingMcp = ref<MCPServerInfo | null>(null)
+const savingMcp = ref(false)
+const mcpForm = ref<McpFormState>(emptyMcpForm())
+const originalEnvText = ref('{}')
+const originalHeadersText = ref('{}')
+
+const mcpToolsVisible = ref(false)
+const mcpToolsServer = ref<MCPServerInfo | null>(null)
+const mcpTools = ref<ToolInfo[]>([])
+const mcpToolsLoading = ref(false)
+const mcpToolsError = ref('')
+
+const syncResultVisible = ref(false)
+const syncResult = ref<MCPSyncResult | null>(null)
+
 const riskLevels = [
   { value: 'low', label: '低风险' },
   { value: 'medium', label: '中风险' },
@@ -60,6 +95,9 @@ const riskLevels = [
 const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
 
 const canWrite = computed(() => auth.has('tools:admin'))
+const canManageMcp = computed(
+  () => Boolean(auth.user?.is_superuser) || auth.has('tools:admin'),
+)
 
 const filteredTools = computed(() =>
   tools.value.filter((tool) => {
@@ -93,6 +131,19 @@ function emptyForm(): ToolFormState {
     queryText: '{}',
     body_mode: 'json',
     timeout_seconds: 60,
+  }
+}
+
+function emptyMcpForm(): McpFormState {
+  return {
+    name: '',
+    transport: 'stdio',
+    command: '',
+    argsText: '[]',
+    envText: '{}',
+    url: '',
+    headersText: '{}',
+    enabled: true,
   }
 }
 
@@ -157,6 +208,52 @@ function parseJsonObject(text: string, label: string): Record<string, unknown> |
     return null
   }
   return parsed as Record<string, unknown>
+}
+
+function parseStringArray(text: string, label: string): string[] | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text.trim() || '[]')
+  } catch {
+    ElMessage.error(`${label} 不是合法 JSON`)
+    return null
+  }
+  if (!Array.isArray(parsed)) {
+    ElMessage.error(`${label} 必须是 JSON 字符串数组`)
+    return null
+  }
+  const values: string[] = []
+  for (const item of parsed) {
+    if (typeof item !== 'string') {
+      ElMessage.error(`${label} 中的每一项都必须是字符串`)
+      return null
+    }
+    values.push(item)
+  }
+  return values
+}
+
+function checkSecretRefs(mapping: Record<string, string>, label: string): boolean {
+  const pattern = /\$\{([^}]*)\}/g
+  for (const [key, value] of Object.entries(mapping)) {
+    for (const match of value.matchAll(pattern)) {
+      if (!match[1].startsWith('TOOL_SECRET_')) {
+        ElMessage.error(
+          `${label} 中「${key}」引用了 ${match[0]}，环境变量引用必须以 \${TOOL_SECRET_} 开头`,
+        )
+        return false
+      }
+    }
+  }
+  return true
+}
+
+function hasMaskedValue(mapping: Record<string, string>): boolean {
+  return Object.values(mapping).some((value) => value.includes('***'))
+}
+
+function transportLabel(transport: string): string {
+  return transport === 'http' ? 'HTTP' : 'stdio'
 }
 
 async function load() {
@@ -336,36 +433,257 @@ async function runTest() {
   }
 }
 
-onMounted(load)
+function refreshCurrent() {
+  if (activeTab.value === 'mcp') {
+    void loadMcp()
+  } else {
+    void load()
+  }
+}
+
+async function loadMcp() {
+  if (!canManageMcp.value) return
+  mcpLoading.value = true
+  mcpError.value = ''
+  try {
+    mcpServers.value = await mcpApi.list()
+  } catch (err) {
+    mcpServers.value = []
+    mcpError.value = describeError(err)
+  } finally {
+    mcpLoading.value = false
+  }
+}
+
+function openMcpDialog(server?: MCPServerInfo) {
+  editingMcp.value = server || null
+  if (server) {
+    const envText = toJsonText(server.env)
+    const headersText = toJsonText(server.headers)
+    originalEnvText.value = envText
+    originalHeadersText.value = headersText
+    mcpForm.value = {
+      name: server.name,
+      transport: server.transport === 'http' ? 'http' : 'stdio',
+      command: server.command || '',
+      argsText: JSON.stringify(server.args || [], null, 2),
+      envText,
+      url: server.url || '',
+      headersText,
+      enabled: server.enabled,
+    }
+  } else {
+    originalEnvText.value = '{}'
+    originalHeadersText.value = '{}'
+    mcpForm.value = emptyMcpForm()
+  }
+  mcpDialogVisible.value = true
+}
+
+async function saveMcp() {
+  if (!canManageMcp.value) {
+    ElMessage.warning('当前账号没有 MCP 管理权限')
+    return
+  }
+  const name = mcpForm.value.name.trim()
+  if (!editingMcp.value && (!/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(name) || name.length < 2)) {
+    ElMessage.warning('服务名称需以字母或数字开头，仅包含字母、数字、下划线、点、冒号、短横线')
+    return
+  }
+
+  const transport = mcpForm.value.transport
+  const payload: Record<string, unknown> = {
+    transport,
+    enabled: mcpForm.value.enabled,
+  }
+
+  if (transport === 'stdio') {
+    const command = mcpForm.value.command.trim()
+    if (!command) {
+      ElMessage.warning('stdio 传输需要填写命令')
+      return
+    }
+    const args = parseStringArray(mcpForm.value.argsText, 'Args')
+    if (!args) return
+    payload.command = command
+    payload.args = args
+
+    const envUnchanged =
+      editingMcp.value !== null &&
+      editingMcp.value.transport === 'stdio' &&
+      mcpForm.value.envText === originalEnvText.value
+    if (!envUnchanged) {
+      const env = parseStringRecord(mcpForm.value.envText, 'Env')
+      if (!env || !checkSecretRefs(env, 'Env')) return
+      if (hasMaskedValue(env)) {
+        ElMessage.warning('Env 含服务端掩码 ***，请重新填写完整值或恢复原配置以保留现有密钥')
+        return
+      }
+      payload.env = env
+    }
+  } else {
+    const url = mcpForm.value.url.trim()
+    if (!/^https?:\/\//i.test(url)) {
+      ElMessage.warning('HTTP 传输的 URL 必须使用 http 或 https 协议')
+      return
+    }
+    payload.url = url
+
+    const headersUnchanged =
+      editingMcp.value !== null &&
+      editingMcp.value.transport === 'http' &&
+      mcpForm.value.headersText === originalHeadersText.value
+    if (!headersUnchanged) {
+      const headers = parseStringRecord(mcpForm.value.headersText, 'Headers')
+      if (!headers || !checkSecretRefs(headers, 'Headers')) return
+      if (hasMaskedValue(headers)) {
+        ElMessage.warning('Headers 含服务端掩码 ***，请重新填写完整值或恢复原配置以保留现有密钥')
+        return
+      }
+      payload.headers = headers
+    }
+  }
+
+  savingMcp.value = true
+  try {
+    if (editingMcp.value) {
+      await mcpApi.update(editingMcp.value.id, payload)
+      ElMessage.success('MCP 服务已更新')
+    } else {
+      await mcpApi.create({ ...payload, name })
+      ElMessage.success('MCP 服务已创建')
+    }
+    mcpDialogVisible.value = false
+    await loadMcp()
+  } catch {
+    // interceptor surfaces the backend message
+  } finally {
+    savingMcp.value = false
+  }
+}
+
+async function toggleMcp(server: MCPServerInfo) {
+  if (!canManageMcp.value) return
+  mcpTogglingId.value = server.id
+  try {
+    const updated = await mcpApi.update(server.id, { enabled: !server.enabled })
+    const index = mcpServers.value.findIndex((item) => item.id === updated.id)
+    if (index >= 0) mcpServers.value[index] = updated
+    ElMessage.success(updated.enabled ? 'MCP 服务已启用' : 'MCP 服务已停用')
+  } catch {
+    // interceptor surfaces the backend message
+  } finally {
+    mcpTogglingId.value = ''
+  }
+}
+
+async function deleteMcp(server: MCPServerInfo) {
+  if (!canManageMcp.value) return
+  try {
+    await ElMessageBox.confirm(
+      `确定删除 MCP 服务「${server.name}」及其已注册工具吗？该操作不可撤销。`,
+      '删除确认',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await mcpApi.remove(server.id)
+    ElMessage.success('MCP 服务已删除')
+    if (mcpToolsServer.value?.id === server.id) mcpToolsVisible.value = false
+    await loadMcp()
+    await load()
+  } catch {
+    // interceptor surfaces the backend message
+  }
+}
+
+async function syncMcp(server: MCPServerInfo) {
+  if (!canManageMcp.value) return
+  mcpSyncingId.value = server.id
+  try {
+    const result = await mcpApi.sync(server.id)
+    syncResult.value = result
+    syncResultVisible.value = true
+    ElMessage.success(
+      `同步完成：新增 ${result.created} · 更新 ${result.updated} · 未变 ${result.unchanged} · 停用 ${result.disabled}`,
+    )
+    await Promise.all([loadMcp(), load()])
+  } catch {
+    await loadMcp()
+  } finally {
+    mcpSyncingId.value = ''
+  }
+}
+
+async function openMcpTools(server: MCPServerInfo) {
+  mcpToolsServer.value = server
+  mcpToolsVisible.value = true
+  mcpToolsLoading.value = true
+  mcpToolsError.value = ''
+  mcpTools.value = []
+  try {
+    mcpTools.value = await mcpApi.tools(server.id)
+  } catch (err) {
+    mcpToolsError.value = describeError(err)
+  } finally {
+    mcpToolsLoading.value = false
+  }
+}
+
+onMounted(() => {
+  void load()
+  if (canManageMcp.value) void loadMcp()
+})
 </script>
 
 <template>
   <div class="page-stack">
-    <PageHeader title="工具管理" subtitle="工具注册表、风险与权限治理、声明式 HTTP 工具">
+    <PageHeader title="工具管理" subtitle="工具注册表、风险与权限治理、声明式 HTTP 工具与 MCP 服务">
       <template #actions>
-        <el-button :loading="loading" @click="load">
+        <el-button
+          :loading="activeTab === 'mcp' ? mcpLoading : loading"
+          @click="refreshCurrent"
+        >
           <el-icon><Refresh /></el-icon>
           刷新
         </el-button>
-        <el-button v-if="canWrite" type="primary" :icon="Plus" @click="openCreate">
+        <el-button
+          v-if="activeTab === 'tools' && canWrite"
+          type="primary"
+          :icon="Plus"
+          @click="openCreate"
+        >
           新建 HTTP 工具
+        </el-button>
+        <el-button
+          v-if="activeTab === 'mcp' && canManageMcp"
+          type="primary"
+          :icon="Plus"
+          @click="openMcpDialog()"
+        >
+          新建 MCP 服务
         </el-button>
       </template>
     </PageHeader>
 
     <el-alert
+      v-if="activeTab === 'tools'"
       type="info"
       :closable="false"
       show-icon
       title="原生工具由代码/插件注册（重启或同步时自动入库），此处仅支持查看、启停与测试；HTTP 工具可在此创建和编辑。"
     />
 
-    <el-alert v-if="error" type="error" :closable="false" show-icon :title="error">
+    <el-alert v-if="activeTab === 'tools' && error" type="error" :closable="false" show-icon :title="error">
       <el-button link type="primary" @click="load">重试</el-button>
     </el-alert>
 
     <div class="card">
-      <div class="toolbar filter-bar">
+      <el-tabs v-model="activeTab">
+        <el-tab-pane label="工具注册表" name="tools">
+          <div class="toolbar filter-bar">
         <div class="filter-group">
           <el-select v-model="sourceFilter" size="small" class="filter-select">
             <el-option label="全部来源" value="all" />
@@ -465,6 +783,96 @@ onMounted(load)
           <el-empty description="暂无工具" :image-size="80" />
         </template>
       </el-table>
+        </el-tab-pane>
+
+        <el-tab-pane v-if="canManageMcp" label="MCP 服务" name="mcp">
+          <el-alert
+            v-if="mcpError"
+            type="error"
+            :closable="false"
+            show-icon
+            :title="mcpError"
+            class="gap"
+          >
+            <el-button link type="primary" @click="loadMcp">重试</el-button>
+          </el-alert>
+
+          <div class="toolbar filter-bar">
+            <span class="muted">共 {{ mcpServers.length }} 个 MCP 服务</span>
+            <span class="muted">同步会从远端发现工具并写入工具注册表</span>
+          </div>
+
+          <el-table v-loading="mcpLoading" :data="mcpServers" row-key="id" size="small">
+            <el-table-column label="名称" min-width="150">
+              <template #default="{ row }">
+                <div class="name-cell">
+                  <span class="name">{{ row.name }}</span>
+                  <span class="muted mono">{{ shortId(row.id, 12) }}</span>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="传输" width="90">
+              <template #default="{ row }">
+                <el-tag size="small" effect="plain">{{ transportLabel(row.transport) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="命令 / URL" min-width="230">
+              <template #default="{ row }">
+                <div v-if="row.transport === 'http'" class="mcp-url mono">
+                  {{ row.url || '-' }}
+                </div>
+                <div v-else class="name-cell">
+                  <span class="mono">{{ row.command || '-' }}</span>
+                  <span v-if="row.args.length" class="muted mono mcp-args">
+                    {{ row.args.join(' ') }}
+                  </span>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="94">
+              <template #default="{ row }">
+                <StatusTag :status="row.enabled ? 'enabled' : 'disabled'" />
+              </template>
+            </el-table-column>
+            <el-table-column label="最近同步" width="166">
+              <template #default="{ row }">{{ formatDate(row.last_sync_at) }}</template>
+            </el-table-column>
+            <el-table-column label="最近错误" min-width="190">
+              <template #default="{ row }">
+                <span v-if="row.last_error" class="mcp-error">{{ row.last_error }}</span>
+                <span v-else class="muted">-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="298" fixed="right">
+              <template #default="{ row }">
+                <div class="row-actions">
+                  <el-button
+                    link
+                    type="primary"
+                    :loading="mcpSyncingId === row.id"
+                    @click="syncMcp(row)"
+                  >
+                    同步
+                  </el-button>
+                  <el-button link @click="openMcpTools(row)">工具</el-button>
+                  <el-button link type="primary" @click="openMcpDialog(row)">编辑</el-button>
+                  <el-button
+                    link
+                    :loading="mcpTogglingId === row.id"
+                    @click="toggleMcp(row)"
+                  >
+                    {{ row.enabled ? '停用' : '启用' }}
+                  </el-button>
+                  <el-button link type="danger" @click="deleteMcp(row)">删除</el-button>
+                </div>
+              </template>
+            </el-table-column>
+            <template #empty>
+              <el-empty description="暂无 MCP 服务" :image-size="80" />
+            </template>
+          </el-table>
+        </el-tab-pane>
+      </el-tabs>
     </div>
 
     <el-drawer
@@ -731,6 +1139,209 @@ onMounted(load)
         <el-button @click="testVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="mcpDialogVisible"
+      :title="editingMcp ? '编辑 MCP 服务' : '新建 MCP 服务'"
+      width="640px"
+    >
+      <el-alert
+        v-if="editingMcp"
+        type="warning"
+        :closable="false"
+        show-icon
+        title="服务端会把 env/headers 中的密钥值掩码为 ***。未修改该字段保存时会保留原值；若修改该字段，请重新填写所有完整值。"
+        class="dialog-alert"
+      />
+      <el-form label-position="top" @submit.prevent="saveMcp">
+        <div class="grid-2">
+          <el-form-item label="名称" required>
+            <el-input
+              v-model="mcpForm.name"
+              :disabled="Boolean(editingMcp)"
+              maxlength="120"
+              placeholder="如 filesystem"
+            />
+            <div v-if="editingMcp" class="inline-hint muted">服务名称创建后不可修改。</div>
+          </el-form-item>
+          <el-form-item label="传输方式">
+            <el-select v-model="mcpForm.transport" class="full">
+              <el-option label="stdio（本地进程）" value="stdio" />
+              <el-option label="HTTP（远程服务）" value="http" />
+            </el-select>
+          </el-form-item>
+        </div>
+
+        <template v-if="mcpForm.transport === 'stdio'">
+          <el-form-item label="命令" required>
+            <el-input v-model="mcpForm.command" placeholder="npx" />
+          </el-form-item>
+          <el-form-item label="Args（JSON 字符串数组）">
+            <el-input
+              v-model="mcpForm.argsText"
+              type="textarea"
+              :rows="3"
+              class="mono-input"
+              placeholder='["-y", "@modelcontextprotocol/server-filesystem", "/data"]'
+            />
+          </el-form-item>
+          <el-form-item label="Env（JSON 对象）">
+            <el-input
+              v-model="mcpForm.envText"
+              type="textarea"
+              :rows="3"
+              class="mono-input"
+              placeholder='{"API_KEY": "${TOOL_SECRET_API_KEY}"}'
+            />
+            <div class="inline-hint muted">
+              值可以是字面量，或 <span class="mono">${TOOL_SECRET_*}</span> 形式的密钥引用；禁止其他环境变量前缀。
+            </div>
+          </el-form-item>
+        </template>
+
+        <template v-else>
+          <el-form-item label="URL" required>
+            <el-input v-model="mcpForm.url" placeholder="https://mcp.example.com/sse" />
+          </el-form-item>
+          <el-form-item label="Headers（JSON）">
+            <el-input
+              v-model="mcpForm.headersText"
+              type="textarea"
+              :rows="3"
+              class="mono-input"
+              placeholder='{"Authorization": "Bearer ${TOOL_SECRET_TOKEN}"}'
+            />
+            <div class="inline-hint muted">
+              敏感请求头值需使用 <span class="mono">${TOOL_SECRET_*}</span> 引用。
+            </div>
+          </el-form-item>
+        </template>
+
+        <el-form-item label="启用">
+          <el-switch v-model="mcpForm.enabled" active-text="启用" inactive-text="停用" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="mcpDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="savingMcp" @click="saveMcp">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="syncResultVisible" title="MCP 同步结果" width="660px">
+      <template v-if="syncResult">
+        <div class="sync-head">
+          <span class="sync-server">{{ syncResult.server_name }}</span>
+          <span class="muted mono">{{ shortId(syncResult.server_id, 12) }}</span>
+        </div>
+        <div class="sync-stats">
+          <div><span class="muted">新增</span><b>{{ syncResult.created }}</b></div>
+          <div><span class="muted">更新</span><b>{{ syncResult.updated }}</b></div>
+          <div><span class="muted">未变</span><b>{{ syncResult.unchanged }}</b></div>
+          <div><span class="muted">停用</span><b>{{ syncResult.disabled }}</b></div>
+        </div>
+        <div class="block-label">发现的工具</div>
+        <el-table v-if="syncResult.tools.length" :data="syncResult.tools" size="small" row-key="id">
+          <el-table-column label="名称" min-width="180">
+            <template #default="{ row }">
+              <div class="name-cell">
+                <span class="name">{{ row.name }}</span>
+                <span class="muted">{{ row.display_name || '-' }}</span>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="风险" width="96">
+            <template #default="{ row }"><StatusTag :status="row.risk_level" /></template>
+          </el-table-column>
+          <el-table-column label="状态" width="96">
+            <template #default="{ row }">
+              <StatusTag :status="row.enabled ? 'enabled' : 'disabled'" />
+            </template>
+          </el-table-column>
+          <el-table-column label="版本" width="80">
+            <template #default="{ row }"><span class="mono">v{{ row.current_version }}</span></template>
+          </el-table-column>
+          <template #empty>
+            <el-empty description="未发现工具" :image-size="60" />
+          </template>
+        </el-table>
+        <el-empty v-else description="未发现工具" :image-size="60" />
+      </template>
+      <template #footer>
+        <el-button @click="syncResultVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-drawer
+      v-model="mcpToolsVisible"
+      size="680px"
+      :title="mcpToolsServer ? `MCP 工具 · ${mcpToolsServer.name}` : 'MCP 工具'"
+    >
+      <div class="toolbar drawer-toolbar">
+        <span class="muted">共 {{ mcpTools.length }} 个工具</span>
+        <el-button
+          size="small"
+          :loading="mcpToolsLoading"
+          @click="mcpToolsServer && openMcpTools(mcpToolsServer)"
+        >
+          刷新
+        </el-button>
+      </div>
+
+      <el-alert
+        v-if="mcpToolsError"
+        type="error"
+        :closable="false"
+        show-icon
+        :title="mcpToolsError"
+        class="gap"
+      />
+
+      <el-skeleton v-if="mcpToolsLoading" :rows="6" animated />
+
+      <el-table v-else-if="mcpTools.length" :data="mcpTools" row-key="id" size="small">
+        <el-table-column label="名称" min-width="180">
+          <template #default="{ row }">
+            <div class="name-cell">
+              <span class="name">{{ row.name }}</span>
+              <span class="muted">{{ row.display_name || '-' }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="风险" width="96">
+          <template #default="{ row }"><StatusTag :status="row.risk_level" /></template>
+        </el-table-column>
+        <el-table-column label="状态" width="96">
+          <template #default="{ row }">
+            <StatusTag :status="row.enabled ? 'enabled' : 'disabled'" />
+          </template>
+        </el-table-column>
+        <el-table-column label="权限范围" min-width="150">
+          <template #default="{ row }">
+            <div v-if="row.permission_scope.length" class="tag-row">
+              <el-tag
+                v-for="code in row.permission_scope"
+                :key="code"
+                size="small"
+                effect="plain"
+                class="mono"
+              >
+                {{ code }}
+              </el-tag>
+            </div>
+            <span v-else class="muted">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="版本" width="80">
+          <template #default="{ row }"><span class="mono">v{{ row.current_version }}</span></template>
+        </el-table-column>
+      </el-table>
+
+      <el-empty
+        v-else-if="!mcpToolsError"
+        description="尚未同步工具，点击「同步」从 MCP 服务发现"
+        :image-size="80"
+      />
+    </el-drawer>
   </div>
 </template>
 
@@ -897,5 +1508,72 @@ onMounted(load)
   gap: 14px;
   margin-bottom: 12px;
   flex-wrap: wrap;
+}
+
+.gap {
+  margin-top: 12px;
+}
+
+.mcp-url {
+  font-size: 11.5px;
+  word-break: break-all;
+  color: var(--app-muted);
+}
+
+.mcp-args {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-error {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--el-color-danger);
+  word-break: break-word;
+}
+
+.sync-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.sync-server {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.sync-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.sync-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.sync-stats b {
+  font-size: 20px;
+  font-weight: 680;
+  letter-spacing: -0.3px;
+}
+
+.drawer-toolbar {
+  margin-bottom: 12px;
 }
 </style>

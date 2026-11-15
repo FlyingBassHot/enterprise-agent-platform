@@ -131,9 +131,10 @@ class AgentService:
             prompt_variables=dict(config.prompt.variables),
             tool_names=list(config.tools),
             tool_versions=tool_versions,
-            skill_names=[],
-            knowledge_base_ids=[],
-            retrieval_enabled=False,
+            skill_names=list(config.skill_names),
+            knowledge_base_ids=list(config.knowledge_base_ids),
+            retrieval_enabled=bool(config.retrieval.enabled and config.knowledge_base_ids),
+            retrieval_top_k=config.retrieval.top_k,
             max_iterations=config.execution.max_iterations,
             timeout_seconds=config.execution.timeout_seconds,
             approval_risk_levels=list(config.execution.approval_risk_levels),
@@ -254,6 +255,30 @@ class AgentService:
                 if disabled:
                     errors.append("Tools disabled: " + ", ".join(disabled))
 
+        if config.knowledge_base_ids:
+            try:
+                from app.modules.knowledge.service import KnowledgeService
+
+                await KnowledgeService(self.db).validate_bindings(
+                    config.knowledge_base_ids, actor
+                )
+            except AppError as exc:
+                errors.append(f"Knowledge: {exc.message}")
+        elif config.retrieval.enabled:
+            warnings.append(
+                "Retrieval is enabled but no knowledge base is bound; retrieval will be skipped"
+            )
+
+        if config.skill_names:
+            try:
+                from app.modules.skill.service import SkillService
+
+                await SkillService(self.db).validate_bindings(
+                    config.skill_names, actor, bound_tools=config.tools
+                )
+            except AppError as exc:
+                errors.append(f"Skills: {exc.message}")
+
         permission_service = PermissionService(self.db)
         known_permissions = {
             permission.code for permission in await permission_service.repo.list_permissions()
@@ -317,6 +342,16 @@ class AgentService:
         from app.modules.model.service import ModelService
 
         return ModelService(self.db)
+
+    def _knowledge_service(self):  # noqa: ANN202
+        from app.modules.knowledge.service import KnowledgeService
+
+        return KnowledgeService(self.db)
+
+    def _skill_service(self):  # noqa: ANN202
+        from app.modules.skill.service import SkillService
+
+        return SkillService(self.db)
 
     def _prompt_service(self):  # noqa: ANN202
         from app.modules.prompt.service import PromptService

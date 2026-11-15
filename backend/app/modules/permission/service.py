@@ -46,6 +46,10 @@ SYSTEM_PERMISSIONS: list[tuple[str, str, str]] = [
     ("roles:manage", "角色管理", "role"),
     ("dashboard:read", "查看仪表盘", "platform"),
     ("audit:read", "访问审计演示", "audit"),
+    ("knowledge:read", "查看知识库", "knowledge"),
+    ("knowledge:write", "管理知识库与文档", "knowledge"),
+    ("skills:read", "查看 Skill", "skill"),
+    ("skills:write", "同步与启停 Skill", "skill"),
 ]
 
 ROLE_PERMISSIONS: dict[str, set[str] | None] = {
@@ -67,6 +71,9 @@ ROLE_PERMISSIONS: dict[str, set[str] | None] = {
         "approvals:write",
         "dashboard:read",
         "audit:read",
+        "knowledge:read",
+        "knowledge:write",
+        "skills:read",
     },
     "viewer": {
         "agents:read",
@@ -77,6 +84,8 @@ ROLE_PERMISSIONS: dict[str, set[str] | None] = {
         "approvals:read",
         "dashboard:read",
         "audit:read",
+        "knowledge:read",
+        "skills:read",
     },
 }
 
