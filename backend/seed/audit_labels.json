@@ -1,0 +1,67 @@
+{
+  "file": "audit_sample.xlsx",
+  "seed": 20240101,
+  "row_count": 83,
+  "labeled_rules": [
+    "duplicate_payment",
+    "large_transaction",
+    "rapid_repeat"
+  ],
+  "anomalies": [
+    {
+      "rule": "large_transaction",
+      "row_number": 70,
+      "payment_id": "PAY2024000135"
+    },
+    {
+      "rule": "large_transaction",
+      "row_number": 71,
+      "payment_id": "PAY2024000137"
+    },
+    {
+      "rule": "large_transaction",
+      "row_number": 72,
+      "payment_id": "PAY2024000139"
+    },
+    {
+      "rule": "large_transaction",
+      "row_number": 73,
+      "payment_id": "PAY2024000141"
+    },
+    {
+      "rule": "large_transaction",
+      "row_number": 74,
+      "payment_id": "PAY2024000143"
+    },
+    {
+      "rule": "duplicate_payment",
+      "row_number": 75,
+      "payment_id": "PAY2024000145"
+    },
+    {
+      "rule": "duplicate_payment",
+      "row_number": 76,
+      "payment_id": "PAY2024000146"
+    },
+    {
+      "rule": "duplicate_payment",
+      "row_number": 77,
+      "payment_id": "PAY2024000147"
+    },
+    {
+      "rule": "duplicate_payment",
+      "row_number": 78,
+      "payment_id": "PAY2024000148"
+    },
+    {
+      "rule": "rapid_repeat",
+      "row_number": 81,
+      "payment_id": "PAY2024000153"
+    },
+    {
+      "rule": "rapid_repeat",
+      "row_number": 82,
+      "payment_id": "PAY2024000155"
+    }
+  ]
+}

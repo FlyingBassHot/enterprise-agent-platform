@@ -1,0 +1,24 @@
+name: audit
+version: 1.0.0
+description: 审计分析领域插件，提供确定性交易异常检测、审计报告生成和演示 Agent 种子数据。
+entrypoint: app.domain_plugins.audit:register
+tools:
+  - name: analyze_transactions
+    description: 分析上传的交易 Excel/CSV，检测重复付款、大额交易、短期重复付款与数据质量问题。
+    risk_level: low
+    timeout_seconds: 60
+    permission_scope:
+      - audit:read
+  - name: generate_audit_report
+    description: 生成包含规则汇总、异常明细、来源行引用和免责声明的 Markdown 审计报告。
+    risk_level: low
+    timeout_seconds: 60
+    permission_scope:
+      - audit:read
+prompts:
+  - name: audit-system
+    description: 财务交易异常审计分析系统提示词
+    file: prompts/audit_system.md
+sample:
+  file: ../../../seed/audit_sample.xlsx
+  labels: ../../../seed/audit_labels.json

@@ -1,0 +1,58 @@
+[project]
+name = "agent-platform"
+version = "0.1.0"
+description = "Enterprise Agent Platform - modular monolith base"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "aiosqlite>=0.20",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "pyjwt>=2.10",
+    "python-multipart>=0.0.20",
+    "httpx>=0.28",
+    "langgraph>=0.2.60",
+    "langchain-core>=0.3.28",
+    "openpyxl>=3.1",
+    "pypdf>=5.1",
+    "python-docx>=1.1",
+    "pyyaml>=6.0",
+    "orjson>=3.10",
+    "cryptography>=44",
+    "jsonschema>=4.23",
+    "langgraph-checkpoint-sqlite>=2.0",
+]
+
+[dependency-groups]
+dev = [
+    "asgi-lifespan>=2.1",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008", "E501"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

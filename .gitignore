@@ -1,0 +1,20 @@
+# Backend
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.pytest_cache/
+data/
+*.db
+*.db-wal
+*.db-shm
+.env
+
+# Frontend
+node_modules/
+dist/
+.vite/
+*.local
+
+# OS
+.DS_Store

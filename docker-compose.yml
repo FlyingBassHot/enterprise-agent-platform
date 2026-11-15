@@ -1,0 +1,41 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: prod
+      APP_DEBUG: "false"
+      APP_SECRET_KEY: ${APP_SECRET_KEY:?Set APP_SECRET_KEY to a random value of at least 32 characters}
+      APP_DATABASE_URL: sqlite+aiosqlite:////data/platform.db
+      APP_STORAGE_DIR: /data/files
+      APP_AUTO_CREATE_TABLES: "false"
+      APP_SEED_DEMO: ${APP_SEED_DEMO:-true}
+      APP_BOOTSTRAP_ADMIN_USERNAME: ${APP_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      APP_BOOTSTRAP_TOKEN: ${APP_BOOTSTRAP_TOKEN:-}
+      APP_CORS_ORIGINS: http://localhost:8080
+      APP_LLM_BASE_URL: ${APP_LLM_BASE_URL:-http://host.docker.internal:8000/v1}
+      APP_LLM_API_KEY: ${APP_LLM_API_KEY:-not-needed}
+      APP_LLM_MODEL: ${APP_LLM_MODEL:-local-model}
+    volumes:
+      - platform-data:/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  platform-data:

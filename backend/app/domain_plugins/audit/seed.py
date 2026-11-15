@@ -1,0 +1,213 @@
+"""Seed the audit demo prompt and Agent.
+
+Service instances are passed in by the caller (a seed script or tests), so this
+module never creates database sessions or requires network access.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from app.core.contracts import UserContext
+from app.core.exceptions import ValidationError
+from app.domain_plugins.audit.prompts import (
+    AUDIT_PROMPT_DESCRIPTION,
+    AUDIT_PROMPT_NAME,
+    load_system_prompt,
+)
+from app.domain_plugins.audit.tools import TOOL_NAMES
+
+AGENT_NAME = "audit-analyst"
+AGENT_DESCRIPTION = "财务交易异常审计分析 Agent，使用确定性规则检测重复付款、大额交易和数据质量问题。"
+TOOL_INSTRUCTIONS = (
+    "优先使用 analyze_transactions 获取确定性结果，再用 generate_audit_report 生成报告。"
+)
+
+
+def _value(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _as_dict(obj: Any) -> dict[str, Any] | None:
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    return None
+
+
+def _agent_config(
+    model_config_id: str, prompt_id: str, prompt_version_id: str
+) -> dict[str, Any]:
+    return {
+        "model": {
+            "config_id": model_config_id,
+            "temperature": 0.2,
+            "max_tokens": 2048,
+            "top_p": 1.0,
+        },
+        "prompt": {
+            "prompt_id": prompt_id,
+            "version_id": prompt_version_id,
+            "variables": {},
+        },
+        "tools": list(TOOL_NAMES),
+        "execution": {
+            "mode": "agent",
+            "max_iterations": 8,
+            "timeout_seconds": 300,
+            "approval_risk_levels": ["high", "critical"],
+            "streaming": True,
+        },
+        "permissions": {
+            "required_permissions": ["audit:read"],
+            "allowed_roles": [],
+        },
+        "metadata": {
+            "domain": "audit",
+            "plugin": "audit",
+            "plugin_version": "1.0.0",
+            "sample_file": "seed/audit_sample.xlsx",
+            "labels_file": "seed/audit_labels.json",
+        },
+    }
+
+
+def _config_matches(stored: Any, expected: dict[str, Any]) -> bool:
+    return _as_dict(stored) == expected
+
+
+def _result(
+    agent: Any,
+    *,
+    agent_id: str,
+    prompt_id: str,
+    prompt_version: int,
+    prompt_version_id: str,
+    model_config_id: str,
+) -> dict[str, Any]:
+    return {
+        "agent_id": _value(agent, "id", agent_id),
+        "agent_name": _value(agent, "name", AGENT_NAME),
+        "agent_status": _value(agent, "status"),
+        "agent_version": _value(agent, "current_version"),
+        "agent_version_id": _value(agent, "current_version_id"),
+        "prompt_id": prompt_id,
+        "prompt_version": prompt_version,
+        "prompt_version_id": prompt_version_id,
+        "tool_names": list(TOOL_NAMES),
+        "model_config_id": model_config_id,
+    }
+
+
+async def _ensure_prompt(prompt_service: Any, actor: UserContext) -> tuple[str, str, int]:
+    from app.modules.prompt.schemas import PromptCreate, PromptVersionCreate
+
+    system_prompt = load_system_prompt()
+    prompts = await prompt_service.list_prompts()
+    prompt = next((item for item in prompts if _value(item, "name") == AUDIT_PROMPT_NAME), None)
+
+    if prompt is None:
+        prompt = await prompt_service.create_prompt(
+            PromptCreate(name=AUDIT_PROMPT_NAME, description=AUDIT_PROMPT_DESCRIPTION)
+        )
+
+    prompt_id = _value(prompt, "id")
+    versions = await prompt_service.list_versions(prompt_id)
+    if versions:
+        latest = max(versions, key=lambda item: _value(item, "version", 0))
+        latest_prompt = _value(latest, "system_prompt")
+        latest_instructions = _value(latest, "tool_instructions") or ""
+        if latest_prompt == system_prompt and latest_instructions == TOOL_INSTRUCTIONS:
+            return prompt_id, _value(latest, "id"), int(_value(latest, "version", 0))
+
+    version = await prompt_service.create_version(
+        prompt_id,
+        PromptVersionCreate(
+            system_prompt=system_prompt,
+            task_prompt="",
+            tool_instructions=TOOL_INSTRUCTIONS,
+            variables=[],
+            publish=True,
+        ),
+        actor.user_id,
+    )
+    return prompt_id, _value(version, "id"), int(_value(version, "version", 0))
+
+
+async def _verify_tools(tool_service: Any, actor: UserContext) -> None:
+    descriptors = await tool_service.describe(list(TOOL_NAMES), actor)
+    available = {_value(descriptor, "name") for descriptor in descriptors}
+    missing = sorted(set(TOOL_NAMES) - available)
+    if missing:
+        raise ValidationError(f"审计工具未注册: {', '.join(missing)}")
+
+
+async def seed_audit_demo(
+    agent_service: Any,
+    prompt_service: Any,
+    tool_service: Any,
+    actor: UserContext,
+    model_config_id: str,
+) -> dict[str, Any]:
+    """Create or update the audit prompt and ``audit-analyst`` Agent.
+
+    ``agent_service``/``prompt_service``/``tool_service`` are service instances
+    bound to an ``AsyncSession``. ``actor`` is the seeding ``UserContext``.
+    ``model_config_id`` selects the model configuration bound to the Agent.
+
+    Returns prompt/agent ids and the published agent version.
+    """
+
+    from app.modules.agent.schemas import AgentCreate, AgentUpdate
+
+    await _verify_tools(tool_service, actor)
+    prompt_id, prompt_version_id, prompt_version = await _ensure_prompt(prompt_service, actor)
+    config = _agent_config(model_config_id, prompt_id, prompt_version_id)
+
+    agents = await agent_service.list_agents(actor)
+    agent = next((item for item in agents if _value(item, "name") == AGENT_NAME), None)
+
+    if agent is None:
+        agent = await agent_service.create_agent(
+            AgentCreate(name=AGENT_NAME, description=AGENT_DESCRIPTION, config=config),
+            actor,
+        )
+        agent_id = _value(agent, "id")
+    else:
+        agent_id = _value(agent, "id")
+        already_seeded = (
+            _value(agent, "status") == "published"
+            and _value(agent, "current_version_id") is not None
+            and _config_matches(_value(agent, "draft_config"), config)
+        )
+        if already_seeded:
+            return _result(
+                agent,
+                agent_id=agent_id,
+                prompt_id=prompt_id,
+                prompt_version=prompt_version,
+                prompt_version_id=prompt_version_id,
+                model_config_id=model_config_id,
+            )
+        await agent_service.update_agent(agent_id, AgentUpdate(config=config), actor)
+
+    validation = await agent_service.validate(agent_id, actor)
+    if not _value(validation, "valid", False):
+        errors = "；".join(_value(validation, "errors", []) or [])
+        raise ValidationError(f"审计 Agent 校验失败: {errors or '未知错误'}")
+
+    agent = await agent_service.publish(agent_id, actor)
+    return _result(
+        agent,
+        agent_id=agent_id,
+        prompt_id=prompt_id,
+        prompt_version=prompt_version,
+        prompt_version_id=prompt_version_id,
+        model_config_id=model_config_id,
+    )
+
+
+__all__ = ["AGENT_NAME", "seed_audit_demo"]
