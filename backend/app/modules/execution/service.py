@@ -47,6 +47,7 @@ from app.modules.execution.schemas import (
     LLMCallOut,
     MessageOut,
 )
+from app.modules.execution.tasks import TaskService
 from app.modules.permission.service import PermissionService
 from app.modules.runtime.context import render_user_text
 from app.modules.runtime.service import RuntimeResult, RuntimeService
@@ -96,6 +97,7 @@ class ExecutionService:
         broker: ExecutionEventBroker | None = None,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         checkpointer: Any = None,
+        task_gateway: Any = None,
     ) -> None:
         self.db = db
         self.repo = ExecutionRepository(db)
@@ -107,6 +109,7 @@ class ExecutionService:
         self.broker = broker or get_broker()
         self.session_factory = session_factory or get_session_factory()
         self._checkpointer = checkpointer
+        self._task_gateway = task_gateway
 
     # ------------------------------------------------------------------ helpers
 
@@ -317,6 +320,18 @@ class ExecutionService:
         conversation = await self._resolve_conversation(
             actor, conversation_agent_id, conversation_title, payload
         )
+        tasks = TaskService(self.db)
+        if payload.task_id:
+            task = await tasks.resolve_for_execution(
+                actor, payload.task_id, conversation.id
+            )
+        else:
+            task = await tasks.ensure_task(
+                agent_id=agent_id or conversation_agent_id,
+                user_id=actor.user_id,
+                conversation_id=conversation.id,
+                goal=payload.input,
+            )
         attachments = await self._load_attachments(actor, payload.artifact_ids)
         user_text = render_user_text(payload.input, attachments)
 
@@ -326,6 +341,7 @@ class ExecutionService:
             trace_id = new_id()
         execution = AgentExecution(
             id=execution_id,
+            task_id=task.id,
             agent_id=agent_id,
             agent_version_id=agent_version_id,
             agent_version=agent_version,
@@ -411,6 +427,11 @@ class ExecutionService:
         detail.llm_calls = [LLMCallOut.model_validate(row) for row in llm_calls]
         detail.input_payload = execution.input_payload or {}
         detail.output_payload = execution.output_payload
+        if execution.task_id:
+            from app.modules.execution.schemas import TaskStepOut
+
+            steps = await TaskService(self.db).steps_for_task(execution.task_id)
+            detail.steps = [TaskStepOut.model_validate(step) for step in steps]
         return detail
 
     async def list_events(
@@ -705,6 +726,7 @@ class ExecutionService:
                 broker=self.broker,
                 session_factory=self.session_factory,
                 checkpointer=self._checkpointer,
+                task_gateway=self._task_gateway,
             )
             await worker._execute(
                 execution_id,
@@ -804,6 +826,7 @@ class ExecutionService:
                         skill_gateway=skill_gateway,
                         knowledge_gateway=knowledge_gateway,
                         checkpointer=self._checkpointer,
+                        task_gateway=self._task_gateway or TaskService(self.db),
                     )
                     if mode == "start":
                         result = await runtime.run(

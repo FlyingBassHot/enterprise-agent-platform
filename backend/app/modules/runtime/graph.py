@@ -63,6 +63,7 @@ def build_agent_graph(
     user: UserContext,
     skills: list[SkillContext] | None = None,
     checkpointer: Any = None,
+    task_gateway: Any = None,
 ) -> CompiledStateGraph:
     settings = get_settings()
 
@@ -493,6 +494,10 @@ def build_agent_graph(
                 if normalized is not None and normalized != plan:
                     plan = normalized
                     plan_changed = True
+                    if task_gateway is not None:
+                        # Persist on the task, not the execution: a later
+                        # execution continues from the same plan.
+                        await task_gateway.apply_plan(execution_id, plan)
                     await sink.emit("plan_updated", {"plan": plan})
 
         update: dict[str, Any] = {

@@ -512,6 +512,19 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
+        <div v-if="detail.steps.length" class="steps-block">
+          <div class="steps-title">任务步骤</div>
+          <div
+            v-for="step in detail.steps"
+            :key="step.id"
+            class="step-row"
+          >
+            <StatusTag :status="step.status" />
+            <span class="step-index mono">{{ step.position + 1 }}</span>
+            <span class="step-title">{{ step.title }}</span>
+          </div>
+        </div>
+
         <div class="meta-grid">
           <div class="meta-item">
             <span class="meta-label">{{ detail.agent_id ? 'Agent' : detail.workflow_id ? 'Workflow' : 'Agent' }}</span>
@@ -815,6 +828,34 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.steps-block {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+}
+
+.steps-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.step-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.step-index {
+  color: var(--el-text-color-secondary);
+  min-width: 18px;
+}
+
+.step-title {
+  flex: 1;
 }
 
 .status-block {

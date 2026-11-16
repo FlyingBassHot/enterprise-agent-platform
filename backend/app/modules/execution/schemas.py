@@ -40,6 +40,38 @@ class MessageOut(_ORMModel):
 
 
 # ---------------------------------------------------------------------------
+# Tasks
+# ---------------------------------------------------------------------------
+
+
+class TaskStepOut(_ORMModel):
+    id: str
+    step_key: str
+    position: int
+    title: str
+    status: str
+    result: str | None = None
+    verified: bool | None = None
+
+
+class TaskOut(_ORMModel):
+    id: str
+    agent_id: str
+    user_id: str
+    conversation_id: str | None = None
+    goal: str
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    success_criteria: list[Any] = Field(default_factory=list)
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskDetailOut(TaskOut):
+    steps: list[TaskStepOut] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # Executions
 # ---------------------------------------------------------------------------
 
@@ -49,6 +81,8 @@ class ExecutionCreate(BaseModel):
     workflow_id: str | None = None
     input: str = ""
     conversation_id: str | None = None
+    # Continue an existing task instead of creating a fresh one.
+    task_id: str | None = None
     artifact_ids: list[str] = Field(default_factory=list)
     variables: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -62,6 +96,7 @@ class ExecutionCreate(BaseModel):
 
 class ExecutionOut(_ORMModel):
     id: str
+    task_id: str | None = None
     agent_id: str
     agent_version_id: str
     agent_version: int
@@ -120,6 +155,7 @@ class ApprovalOut(_ORMModel):
 
 
 class ExecutionDetailOut(ExecutionOut):
+    steps: list[TaskStepOut] = Field(default_factory=list)
     input_payload: dict[str, Any] = Field(default_factory=dict)
     output_payload: dict[str, Any] | None = None
     events_count: int = 0
@@ -172,4 +208,7 @@ __all__ = [
     "LLMCallOut",
     "MessageOut",
     "ResumeExecutionRequest",
+    "TaskDetailOut",
+    "TaskOut",
+    "TaskStepOut",
 ]

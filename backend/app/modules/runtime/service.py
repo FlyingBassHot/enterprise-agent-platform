@@ -22,6 +22,7 @@ from app.core.contracts import (
     RetrievalChunk,
     SkillContext,
     SkillGateway,
+    TaskGateway,
     ToolDescriptor,
     ToolGateway,
     UserContext,
@@ -64,12 +65,14 @@ class RuntimeService:
         skill_gateway: SkillGateway | None = None,
         knowledge_gateway: KnowledgeGateway | None = None,
         checkpointer: Any = None,
+        task_gateway: TaskGateway | None = None,
     ) -> None:
         self.model_gateway = model_gateway
         self.tool_gateway = tool_gateway
         self.sink = sink
         self.skill_gateway = skill_gateway
         self.knowledge_gateway = knowledge_gateway
+        self.task_gateway = task_gateway
         self._checkpointer = checkpointer
 
     async def _resolve_checkpointer(self) -> Any:
@@ -95,6 +98,7 @@ class RuntimeService:
             user=user,
             skills=skills,
             checkpointer=checkpointer,
+            task_gateway=self.task_gateway,
         )
 
     @staticmethod
@@ -181,6 +185,13 @@ class RuntimeService:
                 descriptors = await self.tool_gateway.describe(snapshot.tool_names, user)
             except Exception as exc:  # noqa: BLE001 - registry failure is fatal here
                 return RuntimeResult(status="failed", error=f"failed to resolve tools: {exc}")
+        plan: list[dict[str, str]] = []
+        if self.task_gateway is not None:
+            try:
+                plan = await self.task_gateway.steps_for_execution(execution_id)
+            except Exception:  # noqa: BLE001 - plan loading must not block the run
+                logger.exception("failed to load task plan", extra={"execution_id": execution_id})
+                plan = []
         settings = get_settings()
         state: AgentState = {
             "execution_id": execution_id,
@@ -194,7 +205,7 @@ class RuntimeService:
             "max_iterations": int(
                 snapshot.max_iterations or settings.execution_max_iterations
             ),
-            "plan": [],
+            "plan": plan,
             "stop_reason": None,
             "usage": {},
             "knowledge_citations": [

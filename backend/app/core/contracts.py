@@ -279,6 +279,16 @@ class ToolGateway(Protocol):
     ) -> ToolExecutionResult: ...
 
 
+class TaskGateway(Protocol):
+    """Task-scoped plan state that outlives a single execution."""
+
+    async def steps_for_execution(self, execution_id: str) -> list[dict[str, str]]: ...
+
+    async def apply_plan(
+        self, execution_id: str, plan: Sequence[dict[str, str]]
+    ) -> None: ...
+
+
 # ---------------------------------------------------------------------------
 # Knowledge / skills
 # ---------------------------------------------------------------------------

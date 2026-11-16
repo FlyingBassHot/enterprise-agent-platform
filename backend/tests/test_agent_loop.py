@@ -357,3 +357,80 @@ async def test_unbound_tool_call_reports_unavailable(checkpointer) -> None:  # n
     payload = json.loads(tool_message.content)
     assert payload["error_code"] == "tool_unavailable"
     assert payload["retryable"] is False
+
+
+class FakeTaskGateway:
+    def __init__(self, steps: Sequence[dict[str, str]] = ()) -> None:
+        self.steps = [dict(step) for step in steps]
+        self.applied: list[list[dict[str, str]]] = []
+
+    async def steps_for_execution(self, execution_id: str) -> list[dict[str, str]]:
+        return [dict(step) for step in self.steps]
+
+    async def apply_plan(
+        self, execution_id: str, plan: Sequence[dict[str, str]]
+    ) -> None:
+        self.applied.append([dict(step) for step in plan])
+        self.steps = [dict(step) for step in plan]
+
+
+async def test_task_plan_is_loaded_and_reinjected(checkpointer) -> None:  # noqa: F811
+    steps = [{"id": "1", "title": "读取附件", "status": "in_progress"}]
+    gateway = FakeTaskGateway(steps)
+    sink = FakeSink()
+    model = FakeModel([{"content": "done"}])
+    runtime = RuntimeService(
+        model_gateway=model,
+        tool_gateway=FakeTools(),
+        sink=sink,
+        checkpointer=checkpointer,
+        task_gateway=gateway,
+    )
+
+    result = await runtime.run(
+        execution_id="exec-task-plan",
+        snapshot=make_snapshot(),
+        user=USER,
+        user_text="go",
+    )
+
+    assert result.status == "completed"
+    assert result.output_payload["plan"] == steps
+    first_turn = model.calls[0]["messages"]
+    assert any(
+        message.role == "system" and "读取附件" in message.content
+        for message in first_turn
+    )
+
+
+async def test_plan_updates_are_persisted_to_the_task(checkpointer) -> None:  # noqa: F811
+    plan = [
+        {"id": "1", "title": "读取附件", "status": "in_progress"},
+        {"id": "2", "title": "汇总", "status": "pending"},
+    ]
+    gateway = FakeTaskGateway()
+    sink = FakeSink()
+    model = FakeModel(
+        [
+            {"tool_calls": [{"name": PLAN_TOOL_NAME, "arguments": {"plan": plan}}]},
+            {"content": "done"},
+        ]
+    )
+    runtime = RuntimeService(
+        model_gateway=model,
+        tool_gateway=PlanTools([make_tool(PLAN_TOOL_NAME, "low")]),
+        sink=sink,
+        checkpointer=checkpointer,
+        task_gateway=gateway,
+    )
+
+    result = await runtime.run(
+        execution_id="exec-task-plan-write",
+        snapshot=make_snapshot(tool_names=[PLAN_TOOL_NAME]),
+        user=USER,
+        user_text="go",
+    )
+
+    assert result.status == "completed"
+    assert gateway.applied == [plan]
+    assert "plan_updated" in sink.types()

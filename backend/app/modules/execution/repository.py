@@ -9,12 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.ids import new_id
 from app.modules.execution.models import (
     AgentExecution,
+    AgentTask,
     ApprovalRequest,
     Artifact,
     Conversation,
     ExecutionEvent,
     LLMCall,
     Message,
+    TaskStep,
 )
 
 
@@ -271,4 +273,37 @@ class ExecutionRepository:
         if not ids:
             return []
         stmt = select(Artifact).where(Artifact.id.in_(list(ids)))
+        return list((await self.db.execute(stmt)).scalars().all())
+
+    # -------------------------------------------------------------------- tasks
+
+    async def create_task(self, task: AgentTask) -> AgentTask:
+        self.db.add(task)
+        await self.db.flush()
+        return task
+
+    async def get_task(self, task_id: str) -> AgentTask | None:
+        return await self.db.get(AgentTask, task_id)
+
+    async def list_tasks(
+        self,
+        *,
+        user_id: str | None = None,
+        conversation_id: str | None = None,
+        limit: int = 100,
+    ) -> list[AgentTask]:
+        stmt = select(AgentTask)
+        if user_id:
+            stmt = stmt.where(AgentTask.user_id == user_id)
+        if conversation_id:
+            stmt = stmt.where(AgentTask.conversation_id == conversation_id)
+        stmt = stmt.order_by(AgentTask.created_at.desc()).limit(limit)
+        return list((await self.db.execute(stmt)).scalars().all())
+
+    async def list_steps(self, task_id: str) -> list[TaskStep]:
+        stmt = (
+            select(TaskStep)
+            .where(TaskStep.task_id == task_id)
+            .order_by(TaskStep.position.asc(), TaskStep.created_at.asc())
+        )
         return list((await self.db.execute(stmt)).scalars().all())

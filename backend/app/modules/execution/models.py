@@ -3,7 +3,17 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.database.base import Base, TimestampMixin, UUIDMixin
@@ -53,9 +63,56 @@ class Artifact(UUIDMixin, Base):
     )
 
 
+class AgentTask(UUIDMixin, TimestampMixin, Base):
+    """The unit of work a user asked for; one or more executions serve it."""
+
+    __tablename__ = "agent_tasks"
+
+    agent_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    conversation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("conversations.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
+    goal: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    constraints: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    success_criteria: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), default="active", index=True, nullable=False
+    )
+
+
+class TaskStep(UUIDMixin, TimestampMixin, Base):
+    """A task-scoped plan step; survives executions and context compaction."""
+
+    __tablename__ = "task_steps"
+    __table_args__ = (UniqueConstraint("task_id", "step_key", name="uq_task_step_key"),)
+
+    task_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("agent_tasks.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    step_key: Mapped[str] = mapped_column(String(40), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    title: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    verified: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+
 class AgentExecution(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "agent_executions"
 
+    task_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("agent_tasks.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
     agent_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     agent_version_id: Mapped[str] = mapped_column(String(36), default="", nullable=False)
     agent_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -139,6 +196,8 @@ class LLMCall(UUIDMixin, Base):
 
 __all__ = [
     "AgentExecution",
+    "AgentTask",
+    "TaskStep",
     "ApprovalRequest",
     "Artifact",
     "Conversation",

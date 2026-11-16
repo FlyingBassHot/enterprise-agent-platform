@@ -39,8 +39,11 @@ from app.modules.execution.schemas import (
     ExecutionOut,
     MessageOut,
     ResumeExecutionRequest,
+    TaskDetailOut,
+    TaskOut,
 )
 from app.modules.execution.service import ExecutionService
+from app.modules.execution.tasks import TaskService
 from app.modules.tool.schemas import ToolExecutionOut
 
 router = APIRouter(tags=["executions"])
@@ -206,6 +209,32 @@ async def resume_execution(
         execution_id,
         extra_iterations=payload.extra_iterations if payload else None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Tasks
+# ---------------------------------------------------------------------------
+
+
+@router.get("/tasks", response_model=list[TaskOut])
+async def list_tasks(
+    conversation_id: str | None = None,
+    limit: int = Query(100, ge=1, le=200),
+    actor: UserContext = Depends(require_permission("executions:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    return await TaskService(db).list_tasks(
+        actor, conversation_id=conversation_id, limit=limit
+    )
+
+
+@router.get("/tasks/{task_id}", response_model=TaskDetailOut)
+async def get_task(
+    task_id: str,
+    actor: UserContext = Depends(require_permission("executions:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    return await TaskService(db).get_task(actor, task_id)
 
 
 # ---------------------------------------------------------------------------

@@ -239,6 +239,7 @@ export interface MessageInfo {
 
 export interface ExecutionInfo {
   id: string
+  task_id: string | null
   agent_id: string
   agent_version_id: string
   agent_version: number
@@ -296,7 +297,18 @@ export interface ApprovalInfo {
   comment: string | null
 }
 
+export interface TaskStepInfo {
+  id: string
+  step_key: string
+  position: number
+  title: string
+  status: string
+  result: string | null
+  verified: boolean | null
+}
+
 export interface ExecutionDetail extends ExecutionInfo {
+  steps: TaskStepInfo[]
   input_payload: Record<string, unknown>
   output_payload: Record<string, unknown> | null
   events_count: number

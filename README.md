@@ -58,6 +58,7 @@ Agent 执行链路：
 | Governance | RBAC + ABAC 策略、操作员/审批人角色、审批分离、HTTP 审计日志、登录限流、用户存储配额、SQLite+文件备份/恢复 |
 | Runtime | LangGraph 状态图、流式输出、Tool Calling、计划状态、上下文压缩、结构化工具错误、RAG 引用、Skill 注入、工具绑定校验 |
 | Execution | execution_id、状态机（含 `incomplete` 未完成态）、事件序号、SSE 断线重连、取消、失败恢复、预算追加续跑 |
+| Task | 任务实体（目标/约束/成功标准）、计划步骤持久化、跨执行续跑（`task_id`） |
 | Approval | 高风险工具人工审批、拒绝回传、批准后恢复、禁止非管理员自批 |
 | Artifacts | 文件上传/下载、类型与大小校验、会话归属校验、工具按 artifact_id 读取 |
 | Observability | 执行事件、LLM 调用、Tool 调用、Token 用量、Dashboard 聚合 |
@@ -149,7 +150,7 @@ APP_HTTP_TOOL_MAX_RESPONSE_KB=256   # 单次响应截断上限，默认 256 KB
 单次执行是一个 ReAct 循环：模型决策 → 工具执行（含审批）→ 观察结果 → 再决策，直到模型不再调用工具。
 
 - **工具固定**：工具描述符在 `run` 入口解析一次并写入执行状态，之后每轮复用，保证模型看到的工具前缀稳定（利于 provider prompt cache），也避免每轮一次数据库查询。
-- **计划状态**：`platform_update_plan` 的返回值写入执行状态的 `plan` 字段，并在每轮模型调用前重新注入为一条独立的系统消息；它不写入会话历史，因此不会被上下文裁剪丢掉，也不会污染多轮对话。
+- **计划状态**：`platform_update_plan` 的返回值写入执行状态的 `plan` 字段，**同时持久化到 Task 的 `task_steps`**（`agent_tasks` / `task_steps`），并在每轮模型调用前重新注入为一条独立的系统消息；它不写入会话历史，因此不会被上下文裁剪丢掉，也不会污染多轮对话。同一任务可以用 `POST /executions` 携带 `task_id` 开新执行继续做，计划不会被重置。
 - **预算与降级**：`execution.max_iterations` 用尽时，如果已经有模型文本，执行进入 `incomplete`（未完成）而非 `failed`，保留部分答案并发出 `execution_incomplete` 事件；此时可以 `POST /executions/{id}/resume` 带 `extra_iterations` 追加预算继续同一个 checkpoint。没有任何文本才判定失败。
 - **上限**：追加后的预算上限为 200 次模型调用；整个执行另受 `execution.timeout_seconds` 约束。
 - **上下文预算**：`APP_CONTEXT_CHAR_BUDGET`（默认 60000 字符）是模型上下文的字符替代指标。超出后，较早的工具结果被替换为确定性摘要（保留 status / error_code / output 键名 / 原文 digest / 原始长度），最近 `APP_CONTEXT_KEEP_RECENT_MESSAGES`（默认 6）条消息保持原样；再不够才压缩较早的 assistant 文本。压缩只作用于本轮发给模型的投影，持久化的会话历史不变，并发出 `context_compacted` 事件。
@@ -257,7 +258,7 @@ npx vue-tsc --noEmit -p tsconfig.app.json
 npm run build
 ```
 
-当前结果：**193 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
+当前结果：**199 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
 
 ---
 
