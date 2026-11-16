@@ -451,6 +451,33 @@ class PermissionService:
                 return True
         return False
 
+    async def decide_resource_access(
+        self,
+        user: UserContext,
+        *,
+        resource_type: str,
+        resource_id: str,
+        action: str = "read",
+        owner_id: str | None = None,
+    ):
+        """Structured verdict; the raising helper below delegates to this."""
+
+        from app.core.policy import allow, deny
+
+        allowed = await self.can_access_resource(
+            user,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            action=action,
+            owner_id=owner_id,
+        )
+        if allowed:
+            return allow(f"{action} {resource_type} {resource_id}")
+        return deny(
+            "permission_denied",
+            f"No {action} access to {resource_type} {resource_id}",
+        )
+
     async def require_resource_access(
         self,
         user: UserContext,
@@ -460,14 +487,15 @@ class PermissionService:
         action: str = "read",
         owner_id: str | None = None,
     ) -> None:
-        if not await self.can_access_resource(
+        decision = await self.decide_resource_access(
             user,
             resource_type=resource_type,
             resource_id=resource_id,
             action=action,
             owner_id=owner_id,
-        ):
-            raise PermissionDeniedError(f"No {action} access to {resource_type} {resource_id}")
+        )
+        if not decision.allowed:
+            raise PermissionDeniedError(decision.reason)
 
     async def list_policies(self, actor: UserContext) -> list[AccessPolicyOut]:
         await self.require_permission(actor, "roles:manage")

@@ -495,8 +495,9 @@ async def test_unbound_tool_call_is_rejected_without_execution(checkpointer) -> 
     assert result.status == "completed"
     assert tools.invocations == []
     completed = [event for event in sink.events if event["type"] == "tool_call_completed"]
-    assert completed and completed[0]["payload"]["status"] == "failed"
-    assert "not bound" in completed[0]["payload"]["error"]
+    assert completed and completed[0]["payload"]["status"] == "denied"
+    assert completed[0]["payload"]["error_code"] == "tool_unavailable"
+    assert "未注册" in completed[0]["payload"]["error"]
 
 
 async def test_approval_arguments_are_masked(checkpointer) -> None:

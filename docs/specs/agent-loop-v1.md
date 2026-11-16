@@ -157,6 +157,24 @@ Environment 回答"这次运行在什么环境里工作"，Tool 回答"能做什
 **不变量 I9**：模型第一次调用前，环境资源已完整声明；运行中资源集合不变化。
 **不变量 I10**：工作区读取只接受本环境声明的资源；范围外的 artifact 即使属于该用户也拒绝。
 
+## 7.2 策略契约
+
+所有"能不能做、要不要人批"的判断收敛到 `app/core/policy.py` 的纯函数，运行期与服务层共用同一结论：
+
+| 函数 | 输入 | 输出 |
+|---|---|---|
+| `decide_tool_access` | enabled、permission_scope、用户是否具备、是否有 grant | allow / deny（`tool_disabled` / `permission_denied`） |
+| `decide_tool_approval` | descriptor、平台风险下限、Agent 配置的风险级别 | allow / require_approval（`approval_required_tool` / `approval_required_risk` / `approval_required_agent_policy`） |
+| `decide_tool_call` | 上述 + 是否绑定 + 是否在描述符表内 | 组合结论（`tool_unavailable` / `tool_not_bound` / …） |
+| `PermissionService.decide_resource_access` | 资源类型/ID、动作、owner | allow / deny（`permission_denied`） |
+
+调用点：`ToolService.describe/_run/test_tool`、runtime `tools_node`、workflow `tool`/`agent` 节点、资源授权。审批事件与拒绝事件都携带 `policy{effect, code, reason}`，"为什么被拒/为什么要批"不再靠推断。
+
+边界：maker-checker（谁能批别人的请求）属于审批域的复核规则，不在执行策略内，仍由审批服务负责。
+
+**不变量 I11**：Agent 配置只能增加审批要求，不能降低平台风险下限。
+**不变量 I12**：策略拒绝不执行工具、不产生副作用，并以结构化 `error_code` 回给模型。
+
 ## 8. 观察与错误契约
 
 所有 tool 消息的 `content` 是 JSON：
@@ -250,7 +268,7 @@ Verifier 通过 `VerifierGateway` 注入，runtime 不 import 领域模块；实
 | `verification_completed` | 终检结束 | status, attempt, next_action, issues | 否 |
 | `tool_call_started` | 执行前 | tool_call_id, tool_name, arguments(脱敏) | 否 |
 | `tool_call_completed` | 执行后 | tool_call_id, status, ok, duration_ms, error | 否 |
-| `approval_required` | 需审批 | approval_id, tool_call_id, risk_level | 否（挂起） |
+| `approval_required` | 需审批 | approval_id, tool_call_id, risk_level, policy | 否（挂起） |
 | `approval_resolved` | 审批完成 | approval_id, tool_call_id, approved | 否 |
 | `execution_completed` | 完成 | output, usage | 是 |
 | `execution_incomplete` | 预算耗尽 | output, usage, stop_reason | 是 |
@@ -284,7 +302,7 @@ Verifier 通过 `VerifierGateway` 注入，runtime 不 import 领域模块；实
 | 用户中途改目标 | 只能取消后新建执行 | 无 steering（运行中注入用户消息） |
 | 工具成功但结果丢失 | 无处理 | 需要工具侧幂等键（`ToolContext` 已有位置） |
 | 上下文达上限 | 压缩旧工具输出与旧 assistant 文本 | 压缩后仍可能超窗，无硬失败保护 |
-| 访问未授权资源 | `permission_denied`，不可重试 | 无统一 ABAC 事件审计 |
+| 访问未授权资源 | 策略判定 `deny`（`permission_denied`），不可重试、无副作用 | 原因已进事件，尚无独立策略审计流 |
 | 模型提前宣称完成 | 终检失败 → 回退一次 → 仍失败则 `incomplete` | Level 3 目标级判断仍靠人工 |
 | 任务已完成但模型继续调用工具 | 继续执行直到预算 | 无"完成即停机"优化（可接受） |
 
@@ -306,3 +324,4 @@ Verifier 通过 `VerifierGateway` 注入，runtime 不 import 领域模块；实
 | 2026-11-16 | 计划改为 Task 级持久化（`agent_tasks` / `task_steps`），新增 `TaskGateway` 契约 |
 | 2026-11-16 | 新增 `verify` 相位与 `VerifierGateway`：确定性终检、回退一次、耗尽判 `incomplete` |
 | 2026-11-16 | 新增 `EnvironmentGateway` 与 `ArtifactWorkspace`：环境声明、只读范围、生命周期事件 |
+| 2026-11-16 | 策略收敛到 `app/core/policy.py`：工具访问/审批/资源授权共用 `PolicyDecision`，事件携带原因 |

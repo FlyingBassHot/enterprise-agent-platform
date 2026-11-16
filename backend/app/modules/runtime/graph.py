@@ -28,6 +28,7 @@ from app.core.contracts import (
     UserContext,
 )
 from app.core.plan import PLAN_TOOL_NAME, normalize_plan, render_plan_section
+from app.core.policy import PolicyEffect, decide_tool_call
 from app.modules.runtime.context import (
     AgentState,
     ExecutionSink,
@@ -268,9 +269,7 @@ def build_agent_graph(
         execution_id = state.get("execution_id", "")
         pending: list[dict[str, Any]] = list(state.get("pending_tool_calls") or [])
         messages = list(state.get("messages", []))
-        approvals_configured = set(snapshot.approval_risk_levels)
         bound_tools = set(snapshot.tool_names)
-        platform_approval_levels = {"high", "critical"}
 
         pinned_versions = dict(snapshot.tool_versions or {})
         descriptor_map: dict[str, Any] = {}
@@ -281,7 +280,7 @@ def build_agent_graph(
             stored = state.get("tool_descriptors") or []
             for raw in stored:
                 descriptor = ToolDescriptor.model_validate(raw)
-                if descriptor.name not in pending_names or descriptor.name not in bound_tools:
+                if descriptor.name not in pending_names:
                     continue
                 if pinned_versions and pinned_versions.get(descriptor.name) != descriptor.version:
                     continue
@@ -295,19 +294,24 @@ def build_agent_graph(
             approval_key = f"step:{int(state.get('steps', 0))}:call:{call_index}"
             name = str(call.get("name") or "")
             descriptor = descriptor_map.get(name)
-            # Agent configuration may add approval requirements, but platform
-            # policy (risk level / explicit flag) can never be weakened by it.
-            needs_approval = bool(
-                descriptor is not None
-                and descriptor.enabled
-                and (
-                    descriptor.requires_approval
-                    or descriptor.risk_level in platform_approval_levels
-                    or descriptor.risk_level in approvals_configured
-                )
+            # One decision function for availability, binding, access and
+            # approval. Agent config may add approvals; it can never weaken
+            # the platform floor.
+            policy = decide_tool_call(
+                descriptor,
+                bound=name in bound_tools,
+                access_allowed=True,
+                agent_approval_levels=snapshot.approval_risk_levels,
             )
-            if not needs_approval:
-                decisions[call_id] = {"approved": True, "comment": ""}
+            if policy.effect is PolicyEffect.DENY:
+                decisions[call_id] = {
+                    "approved": False,
+                    "comment": policy.reason,
+                    "policy": policy,
+                }
+                continue
+            if policy.effect is not PolicyEffect.REQUIRE_APPROVAL:
+                decisions[call_id] = {"approved": True, "comment": "", "policy": policy}
                 continue
             raw_arguments = dict(call.get("arguments") or {})
             safe_arguments = mask_arguments(
@@ -330,6 +334,7 @@ def build_agent_graph(
                         "arguments": safe_arguments,
                         "risk_level": descriptor.risk_level,
                         "approval_key": approval_key,
+                        "policy": policy.model_dump(),
                     },
                 )
             raw_decision = interrupt(
@@ -340,6 +345,7 @@ def build_agent_graph(
                     "arguments": safe_arguments,
                     "risk_level": descriptor.risk_level,
                     "approval_key": approval_key,
+                    "policy": policy.model_dump(),
                 }
             )
             decision = _normalize_decision(raw_decision)
@@ -363,6 +369,40 @@ def build_agent_graph(
             arguments = dict(call.get("arguments") or {})
             descriptor = descriptor_map.get(name)
             decision = decisions.get(call_id) or {"approved": False, "comment": ""}
+            policy = decision.get("policy")
+
+            if policy is not None and policy.effect is PolicyEffect.DENY:
+                content = json.dumps(
+                    tool_error_content(
+                        "failed",
+                        error=policy.reason,
+                        tool=name,
+                        code=policy.code,
+                        hint="策略拒绝该调用；不要重试，改用允许的方式或说明限制。",
+                        retryable=False,
+                    ),
+                    ensure_ascii=False,
+                )
+                tool_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "name": name,
+                        "content": content,
+                    }
+                )
+                await sink.emit(
+                    "tool_call_completed",
+                    {
+                        "tool_call_id": call_id,
+                        "tool_name": name,
+                        "status": "denied",
+                        "ok": False,
+                        "error": policy.reason,
+                        "error_code": policy.code,
+                    },
+                )
+                continue
 
             if not decision.get("approved"):
                 content = json.dumps(

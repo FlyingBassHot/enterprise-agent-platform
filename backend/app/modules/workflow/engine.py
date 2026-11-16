@@ -44,7 +44,8 @@ from app.modules.workflow.schemas import WorkflowNode, WorkflowSnapshot
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
 
-_APPROVAL_RISK_LEVELS = frozenset({"high", "critical"})
+from app.core.policy import PolicyEffect, decide_tool_approval
+
 _TEMPLATE_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}")
 _OUTPUT_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 _CONDITION_RE = re.compile(
@@ -457,11 +458,14 @@ class _WorkflowExecutor:
             descriptors = await self._with_retry(
                 node, lambda: self.tool_gateway.describe(snapshot.tool_names, self.user)
             )
-        approval_levels = _APPROVAL_RISK_LEVELS | set(snapshot.approval_risk_levels)
         blocked = [
             descriptor
             for descriptor in descriptors
-            if descriptor.requires_approval or descriptor.risk_level in approval_levels
+            if decide_tool_approval(
+                descriptor,
+                agent_approval_levels=snapshot.approval_risk_levels,
+            ).effect
+            is PolicyEffect.REQUIRE_APPROVAL
         ]
         if blocked:
             names = ", ".join(sorted(descriptor.name for descriptor in blocked))
@@ -650,10 +654,9 @@ class _WorkflowExecutor:
         if not isinstance(arguments, dict):
             arguments = {"value": arguments}
 
-        needs_approval = bool(
-            config.get("requires_approval")
-            or descriptor.requires_approval
-            or descriptor.risk_level in _APPROVAL_RISK_LEVELS
+        policy = decide_tool_approval(descriptor)
+        needs_approval = bool(config.get("requires_approval")) or (
+            policy.effect is PolicyEffect.REQUIRE_APPROVAL
         )
         tool_call_id = f"node:{node.id}"
         if needs_approval:
@@ -679,6 +682,7 @@ class _WorkflowExecutor:
                         "risk_level": descriptor.risk_level,
                         "node_id": node.id,
                         "title": title,
+                        "policy": policy.model_dump(),
                     },
                 )
             raw_decision = interrupt(

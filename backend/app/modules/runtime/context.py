@@ -339,16 +339,19 @@ def tool_error_content(
     error: str | None,
     output: Any = None,
     tool: str | None = None,
+    code: str | None = None,
+    hint: str | None = None,
+    retryable: bool | None = None,
 ) -> dict[str, Any]:
     """Structured failure payload the model can act on instead of guessing."""
 
-    code, hint, retryable = tool_error_details(status)
+    default_code, default_hint, default_retryable = tool_error_details(status)
     payload: dict[str, Any] = {
         "status": status,
         "ok": False,
-        "error_code": code,
-        "retryable": retryable,
-        "hint": hint,
+        "error_code": code or default_code,
+        "retryable": default_retryable if retryable is None else retryable,
+        "hint": hint or default_hint,
         "error": error,
         "output": output,
     }

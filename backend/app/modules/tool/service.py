@@ -28,6 +28,12 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.core.logging import get_logger
+from app.core.policy import (
+    PolicyEffect,
+    allow,
+    decide_tool_access,
+    decide_tool_call,
+)
 from app.modules.tool.adapters.http import execute_http_tool
 from app.modules.tool.exceptions import (
     ToolDefinitionError,
@@ -53,7 +59,6 @@ from app.modules.tool.schemas import (
     ToolUpdate,
 )
 
-APPROVAL_RISK_LEVELS = {"high", "critical"}
 GRANT_ACTIONS = {"execute", "*", "tools:execute"}
 
 logger = get_logger(__name__)
@@ -149,7 +154,8 @@ class ToolService(ToolGateway):
         descriptors: list[ToolDescriptor] = []
         for name in requested:
             tool = rows[name]
-            if self._may_execute(tool, user, grants.get(tool.id, [])):
+            decision = self._decide_access(tool, user, grants.get(tool.id, []))
+            if decision.allowed:
                 descriptors.append(self._descriptor(tool))
         return descriptors
 
@@ -356,7 +362,8 @@ class ToolService(ToolGateway):
             raise PermissionDeniedError(f"Missing permission: {', '.join(missing)}")
         tool = await self._load(tool_id_or_name)
         masked = mask_arguments(arguments, tool.sensitive_fields or [])
-        if tool.risk_level in APPROVAL_RISK_LEVELS:
+        decision = decide_tool_call(self._descriptor(tool), bound=True, access_allowed=True)
+        if decision.effect is PolicyEffect.REQUIRE_APPROVAL:
             started = time.perf_counter()
             result = await self._finish(
                 tool,
@@ -389,7 +396,8 @@ class ToolService(ToolGateway):
 
         if enforce_scope:
             grants = await self.repo.grants_for_tool(tool.id)
-            if not self._may_execute(tool, user, grants):
+            access = self._decide_access(tool, user, grants)
+            if not access.allowed:
                 return await self._finish(
                     tool,
                     user,
@@ -397,12 +405,15 @@ class ToolService(ToolGateway):
                     agent_id,
                     masked,
                     ToolExecutionStatus.DENIED,
-                    "permission_denied",
+                    access.code,
                     None,
                     started,
                 )
 
-        if (tool.requires_approval or tool.risk_level in APPROVAL_RISK_LEVELS) and not approved:
+        approval = decide_tool_call(
+            self._descriptor(tool), bound=True, access_allowed=True
+        )
+        if not approved and approval.effect is PolicyEffect.REQUIRE_APPROVAL:
             return await self._finish(
                 tool,
                 user,
@@ -580,20 +591,22 @@ class ToolService(ToolGateway):
 
     # ------------------------------------------------------------------- helpers
 
-    def _may_execute(
+    def _decide_access(
         self, tool: Tool, user: UserContext, grants: Sequence[ToolPermission]
-    ) -> bool:
+    ):
         if user.is_superuser:
-            return True
+            return allow("superuser")
         scope = list(tool.permission_scope or [])
-        if not scope:
-            return True
-        if all(user.has(code) for code in scope):
-            return True
-        return any(
+        granted = any(
             self._grant_matches(grant, user)
             and bool(set(grant.actions or []) & GRANT_ACTIONS)
             for grant in grants
+        )
+        return decide_tool_access(
+            enabled=tool.enabled,
+            required_scopes=scope,
+            has_all_scopes=all(user.has(code) for code in scope),
+            granted=granted,
         )
 
     @staticmethod
