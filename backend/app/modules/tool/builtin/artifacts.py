@@ -37,13 +37,24 @@ DEFAULT_MAX_CHARS = 8000
 
 
 async def read_artifact_tool(arguments: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-    from app.modules.execution.artifacts import read_artifact_for_tool
-
     artifact_id = str(arguments["artifact_id"]).strip()
-    info, data = await read_artifact_for_tool(artifact_id, ctx.user)
+    if ctx.execution_id:
+        # Inside a run, reads go through the workspace so only resources that
+        # belong to this execution's environment are reachable.
+        from app.modules.execution.environments import read_workspace_resource
+
+        resource, data = await read_workspace_resource(
+            ctx.execution_id, artifact_id, ctx.user
+        )
+        info = resource
+    else:
+        from app.modules.execution.artifacts import read_artifact_for_tool
+
+        info, data = await read_artifact_for_tool(artifact_id, ctx.user)
+    filename = getattr(info, "filename", None) or info.name
     result: dict[str, Any] = {
         "artifact_id": info.id,
-        "filename": info.filename,
+        "filename": filename,
         "content_type": info.content_type or "",
         "size": info.size,
         "content": None,
@@ -51,7 +62,7 @@ async def read_artifact_tool(arguments: dict[str, Any], ctx: ToolContext) -> dic
         "total_chars": 0,
         "note": "",
     }
-    if not _is_text(info.filename, info.content_type):
+    if not _is_text(filename, info.content_type):
         result["note"] = (
             "二进制附件不直接返回内容；请使用对应的领域工具解析（例如审计 Excel 分析工具）。"
         )

@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     # compacted (summarized deterministically) once the transcript exceeds it.
     context_char_budget: int = 60_000
     context_keep_recent_messages: int = 6
+    # Per-resource cap for workspace reads (bytes); protects the runner.
+    environment_max_resource_bytes: int = 10 * 1024 * 1024
     tool_default_timeout_seconds: int = 60
     tool_secret_env_prefix: str = "TOOL_SECRET_"
     worker_inline: bool = True

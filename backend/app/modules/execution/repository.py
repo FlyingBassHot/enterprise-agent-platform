@@ -269,6 +269,14 @@ class ExecutionRepository:
     async def get_artifact(self, artifact_id: str) -> Artifact | None:
         return await self.db.get(Artifact, artifact_id)
 
+    async def list_conversation_artifacts(self, conversation_id: str) -> list[Artifact]:
+        stmt = (
+            select(Artifact)
+            .where(Artifact.conversation_id == conversation_id)
+            .order_by(Artifact.created_at.asc())
+        )
+        return list((await self.db.execute(stmt)).scalars().all())
+
     async def list_artifacts(self, ids: Sequence[str]) -> list[Artifact]:
         if not ids:
             return []

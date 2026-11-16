@@ -299,6 +299,33 @@ class VerificationOutcome(BaseModel):
     ] = "complete"
 
 
+class EnvironmentResource(BaseModel):
+    id: str
+    name: str
+    kind: str = "artifact"
+    content_type: str = ""
+    size: int = 0
+    access: str = "read"
+
+
+class EnvironmentDescriptor(BaseModel):
+    """What the agent works with, declared before the first model call."""
+
+    kind: str
+    environment_id: str
+    label: str = ""
+    resources: list[EnvironmentResource] = Field(default_factory=list)
+    constraints: dict[str, Any] = Field(default_factory=dict)
+
+
+class EnvironmentGateway(Protocol):
+    async def open(
+        self, *, execution_id: str, user: UserContext
+    ) -> EnvironmentDescriptor: ...
+
+    async def close(self, environment_id: str) -> None: ...
+
+
 class VerifierGateway(Protocol):
     async def verify(
         self,

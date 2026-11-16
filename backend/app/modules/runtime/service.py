@@ -17,6 +17,8 @@ from app.core.config import get_settings
 from app.core.contracts import (
     AgentSnapshot,
     ChatMessage,
+    EnvironmentDescriptor,
+    EnvironmentGateway,
     KnowledgeGateway,
     ModelGateway,
     RetrievalChunk,
@@ -68,6 +70,7 @@ class RuntimeService:
         checkpointer: Any = None,
         task_gateway: TaskGateway | None = None,
         verifier_gateway: VerifierGateway | None = None,
+        environment_gateway: EnvironmentGateway | None = None,
     ) -> None:
         self.model_gateway = model_gateway
         self.tool_gateway = tool_gateway
@@ -76,6 +79,7 @@ class RuntimeService:
         self.knowledge_gateway = knowledge_gateway
         self.task_gateway = task_gateway
         self.verifier_gateway = verifier_gateway
+        self.environment_gateway = environment_gateway
         self._checkpointer = checkpointer
 
     async def _resolve_checkpointer(self) -> Any:
@@ -174,6 +178,20 @@ class RuntimeService:
                 "knowledge_retrieved",
                 {"query": user_text, "count": len(citations), "citations": citations},
             )
+        environment = await self._open_environment(execution_id, user)
+        if environment is not None:
+            await self.sink.emit(
+                "environment_opened",
+                {
+                    "kind": environment.kind,
+                    "environment_id": environment.environment_id,
+                    "resources": [
+                        {"id": item.id, "name": item.name, "size": item.size}
+                        for item in environment.resources
+                    ],
+                    "constraints": environment.constraints,
+                },
+            )
         messages = build_initial_messages(
             snapshot,
             history=history,
@@ -182,6 +200,7 @@ class RuntimeService:
             skills=skills,
             knowledge_chunks=chunks,
             knowledge_context_chars=get_settings().knowledge_context_chars,
+            environment=environment,
         )
         descriptors: list[ToolDescriptor] = []
         if snapshot.tool_names:
@@ -214,6 +233,7 @@ class RuntimeService:
             "verification_status": None,
             "verification_issues": [],
             "verification_attempts": 0,
+            "environment": environment.model_dump() if environment else None,
             "usage": {},
             "knowledge_citations": [
                 {
@@ -234,16 +254,21 @@ class RuntimeService:
             async with asyncio.timeout(self._timeout(snapshot)):
                 result = await graph.ainvoke(state, config)
         except TimeoutError:
+            await self._close_environment(execution_id, "failed")
             return RuntimeResult(
                 status="failed",
                 error=f"execution timed out after {self._timeout(snapshot)}s",
             )
         except asyncio.CancelledError:
+            await self._close_environment(execution_id, "cancelled")
             raise
         except Exception as exc:  # noqa: BLE001 - graph failures become failed executions
             logger.exception("runtime execution failed", extra={"execution_id": execution_id})
+            await self._close_environment(execution_id, "failed")
             return RuntimeResult(status="failed", error=f"runtime error: {exc}")
-        return await self._result_from_state(result, execution_id)
+        outcome = await self._result_from_state(result, execution_id)
+        await self._close_environment(execution_id, outcome.status)
+        return outcome
 
     async def resume(
         self,
@@ -259,6 +284,7 @@ class RuntimeService:
         skills = await self._resolve_skills(snapshot, user) if snapshot else []
         graph = self._graph(snapshot, user, checkpointer, skills)  # type: ignore[arg-type]
         config = self._config(execution_id, snapshot)
+        await self._open_environment(execution_id, user)
         if extra_iterations and decision is None and interrupt_id is None:
             # Raising the budget before resuming is what turns an exhausted run
             # into progress instead of an immediate second stop. The graph ended
@@ -285,16 +311,45 @@ class RuntimeService:
             async with asyncio.timeout(self._timeout(snapshot)):
                 result = await graph.ainvoke(graph_input, config)
         except TimeoutError:
+            await self._close_environment(execution_id, "failed")
             return RuntimeResult(
                 status="failed",
                 error=f"execution timed out after {self._timeout(snapshot)}s",
             )
         except asyncio.CancelledError:
+            await self._close_environment(execution_id, "cancelled")
             raise
         except Exception as exc:  # noqa: BLE001
             logger.exception("runtime resume failed", extra={"execution_id": execution_id})
+            await self._close_environment(execution_id, "failed")
             return RuntimeResult(status="failed", error=f"runtime error: {exc}")
-        return await self._result_from_state(result, execution_id)
+        outcome = await self._result_from_state(result, execution_id)
+        await self._close_environment(execution_id, outcome.status)
+        return outcome
+
+    async def _open_environment(
+        self, execution_id: str, user: UserContext
+    ) -> EnvironmentDescriptor | None:
+        if self.environment_gateway is None:
+            return None
+        try:
+            return await self.environment_gateway.open(execution_id=execution_id, user=user)
+        except Exception:  # noqa: BLE001 - missing workspace must not block the run
+            logger.exception(
+                "failed to open environment", extra={"execution_id": execution_id}
+            )
+            return None
+
+    async def _close_environment(self, execution_id: str, status: str) -> None:
+        # A paused run keeps its environment: resume closes it.
+        if self.environment_gateway is None or status == "waiting_approval":
+            return
+        try:
+            await self.environment_gateway.close(execution_id)
+        except Exception:  # noqa: BLE001 - closing is best effort
+            logger.exception(
+                "failed to close environment", extra={"execution_id": execution_id}
+            )
 
     async def _current_iterations(
         self,

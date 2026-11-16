@@ -140,6 +140,23 @@ Verifier 永远不能把执行直接判为 `completed` 或 `failed`。
 
 ---
 
+## 7.1 环境契约
+
+Environment 回答"这次运行在什么环境里工作"，Tool 回答"能做什么"。
+
+| 层 | 内容 |
+|---|---|
+| `EnvironmentGateway` | `open(execution_id, user) -> EnvironmentDescriptor`、`close(environment_id)` |
+| `EnvironmentDescriptor` | `kind`、`environment_id`、`label`、`resources[]`（id/name/kind/content_type/size/access）、`constraints` |
+| v1 实现 | `ArtifactWorkspace`：环境 = 该执行所在会话的附件 + 显式附带的 `artifact_ids` |
+| 访问边界 | 只读；每个资源受 `APP_ENVIRONMENT_MAX_RESOURCE_BYTES`（默认 10 MB）限制；读取仍经过 artifact ACL |
+| 生命周期 | 首次模型调用前 `open`，描述符写入 system prompt（静态，不逐轮重建），发出 `environment_opened`；终态收尾时 `close`；`waiting_approval` 时保持打开，由 resume 负责收尾 |
+
+明确不做：文件系统与代码执行环境。没有隔离就提供写/执行能力，是把 medium 风险工具伪装成环境抽象。
+
+**不变量 I9**：模型第一次调用前，环境资源已完整声明；运行中资源集合不变化。
+**不变量 I10**：工作区读取只接受本环境声明的资源；范围外的 artifact 即使属于该用户也拒绝。
+
 ## 8. 观察与错误契约
 
 所有 tool 消息的 `content` 是 JSON：
@@ -228,6 +245,7 @@ Verifier 通过 `VerifierGateway` 注入，runtime 不 import 领域模块；实
 | `message_completed` | 一轮模型返回 | content, tool_calls, finish_reason | 否 |
 | `plan_updated` | 计划变更 | plan | 否 |
 | `context_compacted` | 压缩生效 | chars_saved, budget_chars | 否 |
+| `environment_opened` | 环境就绪 | kind, environment_id, resources, constraints | 否 |
 | `verification_started` | 进入终检 | attempt, plan_steps, citations, answer_chars | 否 |
 | `verification_completed` | 终检结束 | status, attempt, next_action, issues | 否 |
 | `tool_call_started` | 执行前 | tool_call_id, tool_name, arguments(脱敏) | 否 |
@@ -287,3 +305,4 @@ Verifier 通过 `VerifierGateway` 注入，runtime 不 import 领域模块；实
 | 2026-11-16 | v1 Draft：状态机、相位、终止顺序、预算、观察契约、事件、不变量、故障矩阵 |
 | 2026-11-16 | 计划改为 Task 级持久化（`agent_tasks` / `task_steps`），新增 `TaskGateway` 契约 |
 | 2026-11-16 | 新增 `verify` 相位与 `VerifierGateway`：确定性终检、回退一次、耗尽判 `incomplete` |
+| 2026-11-16 | 新增 `EnvironmentGateway` 与 `ArtifactWorkspace`：环境声明、只读范围、生命周期事件 |

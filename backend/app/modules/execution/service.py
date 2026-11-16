@@ -33,6 +33,7 @@ from app.core.exceptions import (
 from app.core.ids import new_id
 from app.core.logging import get_logger, request_id_var
 from app.infrastructure.database.session import get_session_factory
+from app.modules.execution.environments import ArtifactWorkspace
 from app.modules.execution.events import ExecutionEventBroker, ExecutionEventSink, get_broker
 from app.modules.execution.models import AgentExecution, ApprovalRequest
 from app.modules.execution.repository import ExecutionRepository
@@ -100,6 +101,7 @@ class ExecutionService:
         checkpointer: Any = None,
         task_gateway: Any = None,
         verifier_gateway: Any = None,
+        environment_gateway: Any = None,
     ) -> None:
         self.db = db
         self.repo = ExecutionRepository(db)
@@ -113,6 +115,7 @@ class ExecutionService:
         self._checkpointer = checkpointer
         self._task_gateway = task_gateway
         self._verifier_gateway = verifier_gateway
+        self._environment_gateway = environment_gateway
 
     # ------------------------------------------------------------------ helpers
 
@@ -731,6 +734,7 @@ class ExecutionService:
                 checkpointer=self._checkpointer,
                 task_gateway=self._task_gateway,
                 verifier_gateway=self._verifier_gateway,
+                environment_gateway=self._environment_gateway,
             )
             await worker._execute(
                 execution_id,
@@ -832,6 +836,9 @@ class ExecutionService:
                         checkpointer=self._checkpointer,
                         task_gateway=self._task_gateway or TaskService(self.db),
                         verifier_gateway=self._verifier_gateway or TaskVerifier(self.db),
+                        environment_gateway=(
+                            self._environment_gateway or ArtifactWorkspace(self.db)
+                        ),
                     )
                     if mode == "start":
                         result = await runtime.run(

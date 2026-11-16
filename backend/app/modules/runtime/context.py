@@ -12,7 +12,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TypedDict
 
-from app.core.contracts import AgentSnapshot, ChatMessage, RetrievalChunk, SkillContext
+from app.core.contracts import (
+    AgentSnapshot,
+    ChatMessage,
+    EnvironmentDescriptor,
+    RetrievalChunk,
+    SkillContext,
+)
 
 MAX_TOOL_RESULT_CHARS = 20_000
 
@@ -127,6 +133,39 @@ def _knowledge_block(chunks: Sequence[RetrievalChunk], max_chars: int) -> str:
     return "\n\n".join(parts)
 
 
+MAX_ENVIRONMENT_LISTING = 50
+
+
+def render_environment_section(descriptor: EnvironmentDescriptor | None) -> str:
+    if descriptor is None:
+        return ""
+    lines = [
+        "## Environment (workspace)",
+        f"kind={descriptor.kind} id={descriptor.environment_id}"
+        + (f" label={descriptor.label}" if descriptor.label else ""),
+    ]
+    if descriptor.resources:
+        lines.append(
+            "Resources in this workspace (read them with platform_read_artifact, "
+            "by resource id; nothing outside this list is part of the task):"
+        )
+        for resource in descriptor.resources[:MAX_ENVIRONMENT_LISTING]:
+            lines.append(
+                f"- {resource.name} (id={resource.id}, kind={resource.kind}, "
+                f"type={resource.content_type or 'unknown'}, {resource.size} bytes, "
+                f"access={resource.access})"
+            )
+        remaining = len(descriptor.resources) - MAX_ENVIRONMENT_LISTING
+        if remaining > 0:
+            lines.append(f"- …还有 {remaining} 个资源未列出")
+    else:
+        lines.append("No resources are attached to this run.")
+    if descriptor.constraints:
+        parts = [f"{key}={value}" for key, value in descriptor.constraints.items()]
+        lines.append("Constraints: " + ", ".join(parts))
+    return "\n".join(lines)
+
+
 def build_system_prompt(
     snapshot: AgentSnapshot,
     *,
@@ -134,6 +173,7 @@ def build_system_prompt(
     skills: Sequence[SkillContext] = (),
     knowledge_chunks: Sequence[RetrievalChunk] = (),
     knowledge_context_chars: int = 6000,
+    environment: EnvironmentDescriptor | None = None,
 ) -> str:
     # Prompt templates are resolved and validated once at publish time. Applying
     # str.format again here would corrupt literal JSON/code braces and could
@@ -158,6 +198,9 @@ def build_system_prompt(
     block = _knowledge_block(knowledge_chunks, knowledge_context_chars)
     if block:
         parts.append(block)
+    environment_block = render_environment_section(environment)
+    if environment_block:
+        parts.append(environment_block)
     return "\n\n".join(part for part in parts if part)
 
 
@@ -170,6 +213,7 @@ def build_initial_messages(
     skills: Sequence[SkillContext] = (),
     knowledge_chunks: Sequence[RetrievalChunk] = (),
     knowledge_context_chars: int = 6000,
+    environment: EnvironmentDescriptor | None = None,
 ) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = [
         {
@@ -180,6 +224,7 @@ def build_initial_messages(
                 skills=skills,
                 knowledge_chunks=knowledge_chunks,
                 knowledge_context_chars=knowledge_context_chars,
+                environment=environment,
             ),
         }
     ]
