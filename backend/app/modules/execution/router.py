@@ -38,6 +38,7 @@ from app.modules.execution.schemas import (
     ExecutionEventOut,
     ExecutionOut,
     MessageOut,
+    ResumeExecutionRequest,
 )
 from app.modules.execution.service import ExecutionService
 from app.modules.tool.schemas import ToolExecutionOut
@@ -196,10 +197,15 @@ async def cancel_execution(
 @router.post("/executions/{execution_id}/resume", response_model=ExecutionOut)
 async def resume_execution(
     execution_id: str,
+    payload: ResumeExecutionRequest | None = None,
     actor: UserContext = Depends(require_permission("executions:write")),
     service: ExecutionService = Depends(get_execution_service),
 ):
-    return await service.resume(actor, execution_id)
+    return await service.resume(
+        actor,
+        execution_id,
+        extra_iterations=payload.extra_iterations if payload else None,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -11,12 +11,15 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from app.core.contracts import ToolDescriptor
+from app.core.plan import PLAN_STATUSES, PLAN_TOOL_NAME
 from app.modules.tool.builtin.artifacts import read_artifact_tool
 from app.modules.tool.builtin.http import http_request_tool
+from app.modules.tool.builtin.plan import update_plan_tool
 from app.modules.tool.builtin.time import current_time_tool
 
 TOOL_NAMES = (
     "platform_current_time",
+    PLAN_TOOL_NAME,
     "platform_read_artifact",
     "platform_http_request",
 )
@@ -93,6 +96,62 @@ def build_descriptors() -> list[ToolDescriptor]:
                 "additionalProperties": False,
             },
             output_schema=_CURRENT_TIME_OUTPUT,
+            version="1.0.0",
+            source_type="native",
+            risk_level="low",
+            timeout_seconds=10,
+            permission_scope=[],
+            requires_approval=False,
+            enabled=True,
+        ),
+        ToolDescriptor(
+            name=PLAN_TOOL_NAME,
+            description=(
+                "维护本次任务的计划清单（待办列表）。任务超过一步时，先调用本工具列出步骤；"
+                "开始某步前标为 in_progress，只有确认结果后才标为 done，阻塞时标为 blocked。"
+                "计划会每轮重新注入，修改方法变化时同步更新。"
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "plan": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 20,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string", "maxLength": 40},
+                                "title": {"type": "string", "minLength": 1, "maxLength": 200},
+                                "status": {"type": "string", "enum": list(PLAN_STATUSES)},
+                            },
+                            "required": ["id", "title", "status"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["plan"],
+                "additionalProperties": False,
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "plan": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "title": {"type": "string"},
+                                "status": {"type": "string"},
+                            },
+                            "required": ["id", "title", "status"],
+                        },
+                    },
+                    "count": {"type": "integer"},
+                },
+                "required": ["plan", "count"],
+            },
             version="1.0.0",
             source_type="native",
             risk_level="low",
@@ -187,6 +246,7 @@ def build_descriptors() -> list[ToolDescriptor]:
 def tool_handlers() -> dict[str, _CALLABLE]:
     return {
         "platform_current_time": current_time_tool,
+        PLAN_TOOL_NAME: update_plan_tool,
         "platform_read_artifact": read_artifact_tool,
         "platform_http_request": http_request_tool,
     }

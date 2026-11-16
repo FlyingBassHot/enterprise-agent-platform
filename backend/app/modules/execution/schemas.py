@@ -127,6 +127,12 @@ class ExecutionDetailOut(ExecutionOut):
     llm_calls: list[LLMCallOut] = Field(default_factory=list)
 
 
+class ResumeExecutionRequest(BaseModel):
+    """Optional extra budget for resuming an exhausted execution."""
+
+    extra_iterations: int | None = Field(default=None, ge=1, le=100)
+
+
 class ApprovalDecision(BaseModel):
     comment: str = ""
 
@@ -165,4 +171,5 @@ __all__ = [
     "ExecutionOut",
     "LLMCallOut",
     "MessageOut",
+    "ResumeExecutionRequest",
 ]

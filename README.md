@@ -57,7 +57,7 @@ Agent 执行链路：
 | Workflow | 版本化 JSON 定义、Start/LLM/Agent/Tool/Knowledge/Condition/Approval/End、LangGraph 执行、审批/恢复/重试、Agent `workflow`/`hybrid` 模式 |
 | Governance | RBAC + ABAC 策略、操作员/审批人角色、审批分离、HTTP 审计日志、登录限流、用户存储配额、SQLite+文件备份/恢复 |
 | Runtime | LangGraph 状态图、流式输出、Tool Calling、RAG 引用、Skill 注入、工具绑定校验 |
-| Execution | execution_id、状态机、事件序号、SSE 断线重连、取消、失败恢复 |
+| Execution | execution_id、状态机（含 `incomplete` 未完成态）、事件序号、SSE 断线重连、取消、失败恢复、预算追加续跑 |
 | Approval | 高风险工具人工审批、拒绝回传、批准后恢复、禁止非管理员自批 |
 | Artifacts | 文件上传/下载、类型与大小校验、会话归属校验、工具按 artifact_id 读取 |
 | Observability | 执行事件、LLM 调用、Tool 调用、Token 用量、Dashboard 聚合 |
@@ -132,6 +132,7 @@ make build       # 前端生产构建
 |---|---|---|
 | `platform_current_time` | low | 返回当前时间、日期、星期、时区偏移与时间戳，支持 IANA 时区 |
 | `platform_read_artifact` | low | 读取当前用户有权访问的上传附件；文本类附件返回正文摘录，二进制附件只返回元数据 |
+| `platform_update_plan` | low | 维护本次任务的计划清单；计划作为 loop 状态每轮重新注入，不写入消息历史 |
 | `platform_http_request` | medium | 向管理员白名单内的服务发起 GET/POST；白名单为空时禁止出网，内网/保留地址一律拒绝，不自动跟随重定向 |
 
 出网白名单通过环境变量配置（逗号分隔，精确主机名或以 `.` 开头的后缀）：
@@ -142,6 +143,15 @@ APP_HTTP_TOOL_MAX_RESPONSE_KB=256   # 单次响应截断上限，默认 256 KB
 ```
 
 白名单只作用于内置 `platform_http_request`；管理员在「工具管理」中手工登记的 HTTP Tool 仍按各工具自身配置出站。DNS 解析与 HTTP 客户端各解析一次，存在 DNS rebinding 时间窗，因此白名单应只包含自有或可信主机。
+
+### 执行循环
+
+单次执行是一个 ReAct 循环：模型决策 → 工具执行（含审批）→ 观察结果 → 再决策，直到模型不再调用工具。
+
+- **工具固定**：工具描述符在 `run` 入口解析一次并写入执行状态，之后每轮复用，保证模型看到的工具前缀稳定（利于 provider prompt cache），也避免每轮一次数据库查询。
+- **计划状态**：`platform_update_plan` 的返回值写入执行状态的 `plan` 字段，并在每轮模型调用前重新注入为一条独立的系统消息；它不写入会话历史，因此不会被上下文裁剪丢掉，也不会污染多轮对话。
+- **预算与降级**：`execution.max_iterations` 用尽时，如果已经有模型文本，执行进入 `incomplete`（未完成）而非 `failed`，保留部分答案并发出 `execution_incomplete` 事件；此时可以 `POST /executions/{id}/resume` 带 `extra_iterations` 追加预算继续同一个 checkpoint。没有任何文本才判定失败。
+- **上限**：追加后的预算上限为 200 次模型调用；整个执行另受 `execution.timeout_seconds` 约束。
 
 ### 切换到真实模型
 
@@ -245,7 +255,7 @@ npx vue-tsc --noEmit -p tsconfig.app.json
 npm run build
 ```
 
-当前结果：**181 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
+当前结果：**188 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
 
 ---
 

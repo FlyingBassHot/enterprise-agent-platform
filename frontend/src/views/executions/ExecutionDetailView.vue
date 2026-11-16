@@ -35,9 +35,9 @@ import type {
 } from '@/types/api'
 import { formatDate, formatDuration, shortId } from '@/utils/format'
 
-const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled']
+const TERMINAL_STATUSES = ['completed', 'incomplete', 'failed', 'cancelled']
 const CANCELLABLE_STATUSES = ['pending', 'running', 'waiting_approval']
-const RESUMABLE_STATUSES = ['failed', 'waiting_approval']
+const RESUMABLE_STATUSES = ['incomplete', 'failed', 'waiting_approval']
 
 const route = useRoute()
 const router = useRouter()
@@ -187,7 +187,9 @@ function handleStreamEvent(event: ExecutionEventDto) {
   const terminalStatus =
     event.type === 'execution_completed'
       ? 'completed'
-      : event.type === 'execution_failed'
+      : event.type === 'execution_incomplete'
+        ? 'incomplete'
+        : event.type === 'execution_failed'
         ? 'failed'
         : event.type === 'execution_cancelled'
           ? 'cancelled'
@@ -362,7 +364,10 @@ async function resumeExecution() {
   if (!detail.value) return
   resumeLoading.value = true
   try {
-    await executionsApi.resume(detail.value.id)
+    await executionsApi.resume(
+      detail.value.id,
+      status.value === 'incomplete' ? 8 : undefined,
+    )
     ElMessage.success('已恢复执行')
     await load()
   } catch (err) {

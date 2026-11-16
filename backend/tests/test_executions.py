@@ -361,3 +361,41 @@ async def test_conversation_messages_return_newest_window(
     assert contents[-1] == "message-599"
     assert contents[0] == "message-100"
     assert "message-000" not in contents
+
+
+async def test_budget_exhaustion_is_resumable(
+    client: AsyncClient, admin: dict[str, str], install_runtime
+) -> None:
+    snapshot = make_snapshot(max_iterations=1, tool_names=["echo"])
+    model = FakeModel(
+        [
+            {
+                "content": "partial answer",
+                "tool_calls": [{"name": "echo", "arguments": {"value": 1}}],
+            },
+            {"content": "final answer"},
+        ]
+    )
+    tools = FakeTools([make_tool("echo", "low")])
+    install_runtime(model=model, tools=tools, loader=FakeLoader(snapshot))
+
+    execution = await _create_execution(client, admin, input="do the job")
+    body = await _wait_for_status(client, admin, execution["id"], {"incomplete"})
+    assert body["output_text"] == "partial answer"
+    assert body["output_payload"]["partial"] is True
+    assert body["error"] is None
+
+    events = await client.get(f"{API}/executions/{execution['id']}/events", headers=admin)
+    assert events.status_code == 200, events.text
+    assert any(item["type"] == "execution_incomplete" for item in events.json())
+
+    resumed = await client.post(
+        f"{API}/executions/{execution['id']}/resume",
+        headers=admin,
+        json={"extra_iterations": 2},
+    )
+    assert resumed.status_code == 200, resumed.text
+
+    finished = await _wait_for_status(client, admin, execution["id"], {"completed"})
+    assert finished["output_text"] == "final answer"
+    assert finished["output_payload"].get("partial") is not True

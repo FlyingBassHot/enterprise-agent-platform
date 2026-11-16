@@ -18,6 +18,7 @@ APPROVAL_EVENT_TYPES = {"approval_required", "approval_resolved"}
 
 TERMINAL_EVENT_TYPES = {
     "execution_completed",
+    "execution_incomplete",
     "execution_failed",
     "execution_cancelled",
 }

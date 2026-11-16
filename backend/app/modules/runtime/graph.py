@@ -18,13 +18,16 @@ from langgraph.types import interrupt
 from app.core.config import get_settings
 from app.core.contracts import (
     AgentSnapshot,
+    ChatMessage,
     ModelGateway,
     SkillContext,
     ToolCall,
+    ToolDescriptor,
     ToolGateway,
     ToolInvocation,
     UserContext,
 )
+from app.core.plan import PLAN_TOOL_NAME, normalize_plan, render_plan_section
 from app.modules.runtime.context import (
     AgentState,
     ExecutionSink,
@@ -65,29 +68,68 @@ def build_agent_graph(
         snapshot = AgentSnapshot.model_validate(state["agent_snapshot"])
         execution_id = state.get("execution_id", "")
         steps = int(state.get("steps", 0))
-        max_iterations = int(snapshot.max_iterations or settings.execution_max_iterations)
+        max_iterations = int(
+            state.get("max_iterations")
+            or snapshot.max_iterations
+            or settings.execution_max_iterations
+        )
+        messages = list(state.get("messages", []))
         if steps >= max_iterations:
+            # The loop is out of budget. A partial answer is still worth
+            # returning: the execution becomes resumable instead of failing.
+            partial = next(
+                (
+                    str(message.get("content"))
+                    for message in reversed(messages)
+                    if message.get("role") == "assistant" and message.get("content")
+                ),
+                None,
+            )
+            if partial:
+                return {
+                    "error": None,
+                    "steps": steps,
+                    "pending_tool_calls": [],
+                    "final_output": partial,
+                    "stop_reason": "max_iterations",
+                }
             return {
-                "error": f"maximum iterations ({max_iterations}) exceeded",
+                "error": (
+                    f"maximum iterations ({max_iterations}) exceeded "
+                    "before producing an answer"
+                ),
                 "steps": steps,
                 "pending_tool_calls": [],
                 "final_output": None,
+                "stop_reason": "max_iterations",
             }
 
-        messages = list(state.get("messages", []))
         chat_messages = to_chat_messages(messages)
+        plan = list(state.get("plan") or [])
+        if plan:
+            # Re-inject the plan on every turn: it is state, not history, so it
+            # cannot drift or be dropped by context trimming.
+            index = 1 if chat_messages and chat_messages[0].role == "system" else 0
+            chat_messages.insert(
+                index, ChatMessage(role="system", content=render_plan_section(plan))
+            )
 
-        descriptors = []
-        if snapshot.tool_names:
-            try:
-                descriptors = await tool_gateway.describe(snapshot.tool_names, user)
-            except Exception as exc:  # noqa: BLE001 - tool registry failures are execution errors
-                return {
-                    "error": f"failed to resolve tools: {exc}",
-                    "steps": steps,
-                    "pending_tool_calls": [],
-                    "final_output": None,
-                }
+        stored = state.get("tool_descriptors")
+        if stored is None:
+            # Legacy checkpoints predate the cached descriptors.
+            descriptors: list[ToolDescriptor] = []
+            if snapshot.tool_names:
+                try:
+                    descriptors = await tool_gateway.describe(snapshot.tool_names, user)
+                except Exception as exc:  # noqa: BLE001 - registry failure is fatal here
+                    return {
+                        "error": f"failed to resolve tools: {exc}",
+                        "steps": steps,
+                        "pending_tool_calls": [],
+                        "final_output": None,
+                    }
+        else:
+            descriptors = [ToolDescriptor.model_validate(item) for item in stored]
         specs = [descriptor.to_spec() for descriptor in descriptors if descriptor.enabled]
 
         provider = ""
@@ -189,6 +231,7 @@ def build_agent_graph(
                 "error": None,
                 "pending_tool_calls": [call.model_dump() for call in tool_calls],
                 "final_output": None,
+                "stop_reason": None,
                 "usage": usage,
             }
         return {
@@ -197,6 +240,7 @@ def build_agent_graph(
             "error": None,
             "pending_tool_calls": [],
             "final_output": text,
+            "stop_reason": None,
             "usage": usage,
         }
 
@@ -211,26 +255,18 @@ def build_agent_graph(
 
         pinned_versions = dict(snapshot.tool_versions or {})
         descriptor_map: dict[str, Any] = {}
+        plan = list(state.get("plan") or [])
+        plan_changed = False
         if pending:
-            bound_pending = [
-                str(call.get("name"))
-                for call in pending
-                if str(call.get("name")) in bound_tools
-            ]
-            try:
-                described = await tool_gateway.describe(bound_pending, user)
-                descriptor_map = {
-                    descriptor.name: descriptor
-                    for descriptor in described
-                    if not pinned_versions
-                    or pinned_versions.get(descriptor.name) == descriptor.version
-                }
-            except Exception as exc:  # noqa: BLE001
-                return {
-                    "messages": messages,
-                    "pending_tool_calls": [],
-                    "error": f"failed to resolve tools: {exc}",
-                }
+            pending_names = {str(call.get("name")) for call in pending}
+            stored = state.get("tool_descriptors") or []
+            for raw in stored:
+                descriptor = ToolDescriptor.model_validate(raw)
+                if descriptor.name not in pending_names or descriptor.name not in bound_tools:
+                    continue
+                if pinned_versions and pinned_versions.get(descriptor.name) != descriptor.version:
+                    continue
+                descriptor_map[descriptor.name] = descriptor
 
         # Phase 1: resolve every approval before executing anything, so a
         # resumed node never replays already executed tool side effects.
@@ -431,12 +467,21 @@ def build_agent_graph(
                     "error": result_error,
                 },
             )
+            if ok and name == PLAN_TOOL_NAME and isinstance(output, dict):
+                normalized = normalize_plan(output.get("plan"))
+                if normalized is not None and normalized != plan:
+                    plan = normalized
+                    plan_changed = True
+                    await sink.emit("plan_updated", {"plan": plan})
 
-        return {
+        update: dict[str, Any] = {
             "messages": messages + tool_messages,
             "pending_tool_calls": [],
             "error": None,
         }
+        if plan_changed:
+            update["plan"] = plan
+        return update
 
     def route_after_agent(state: AgentState) -> str:
         if state.get("error"):

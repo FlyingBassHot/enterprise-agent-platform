@@ -461,7 +461,13 @@ class ExecutionService:
             task.cancel()
         return ExecutionOut.model_validate(execution)
 
-    async def resume(self, actor: UserContext, execution_id: str) -> ExecutionOut:
+    async def resume(
+        self,
+        actor: UserContext,
+        execution_id: str,
+        *,
+        extra_iterations: int | None = None,
+    ) -> ExecutionOut:
         self._require(actor, "executions:write")
         execution = await self._load_execution(execution_id)
         await self._require_execution_write(actor, execution)
@@ -508,7 +514,12 @@ class ExecutionService:
 
         owner = await self._owner_context(execution.user_id, fallback=actor)
         self._schedule(
-            execution_id, owner, mode=mode, decision=decision, interrupt_id=interrupt_id
+            execution_id,
+            owner,
+            mode=mode,
+            decision=decision,
+            interrupt_id=interrupt_id,
+            extra_iterations=extra_iterations,
         )
         return ExecutionOut.model_validate(execution)
 
@@ -648,6 +659,7 @@ class ExecutionService:
         mode: str,
         decision: dict[str, Any] | None = None,
         interrupt_id: str | None = None,
+        extra_iterations: int | None = None,
     ) -> None:
         if not get_settings().worker_inline:
             return
@@ -656,7 +668,12 @@ class ExecutionService:
             return
         task = asyncio.create_task(
             self._execute_task(
-                execution_id, actor, mode=mode, decision=decision, interrupt_id=interrupt_id
+                execution_id,
+                actor,
+                mode=mode,
+                decision=decision,
+                interrupt_id=interrupt_id,
+                extra_iterations=extra_iterations,
             )
         )
         _TASKS[execution_id] = task
@@ -675,6 +692,7 @@ class ExecutionService:
         mode: str,
         decision: dict[str, Any] | None,
         interrupt_id: str | None,
+        extra_iterations: int | None = None,
     ) -> None:
         async with self.session_factory() as db:
             worker = ExecutionService(
@@ -689,7 +707,12 @@ class ExecutionService:
                 checkpointer=self._checkpointer,
             )
             await worker._execute(
-                execution_id, actor, mode=mode, decision=decision, interrupt_id=interrupt_id
+                execution_id,
+                actor,
+                mode=mode,
+                decision=decision,
+                interrupt_id=interrupt_id,
+                extra_iterations=extra_iterations,
             )
 
     async def _execute(
@@ -700,6 +723,7 @@ class ExecutionService:
         mode: str,
         decision: dict[str, Any] | None = None,
         interrupt_id: str | None = None,
+        extra_iterations: int | None = None,
     ) -> None:
         execution = await self.repo.get_execution(execution_id)
         if execution is None:
@@ -797,6 +821,7 @@ class ExecutionService:
                             snapshot=snapshot,
                             decision=decision,
                             interrupt_id=interrupt_id,
+                            extra_iterations=extra_iterations,
                         )
             await self._apply_result(execution_id, result, sink)
         except asyncio.CancelledError:
@@ -939,6 +964,32 @@ class ExecutionService:
             )
             return
 
+        if result.status == "incomplete":
+            # Budget exhausted with a usable partial answer. The run stays
+            # resumable; the partial text is not appended to the conversation
+            # because the checkpoint still owns that message.
+            execution.status = ExecutionStatus.INCOMPLETE.value
+            execution.output_text = result.output_text
+            execution.finished_at = _now()
+            await self.db.commit()
+            await self._sync_workflow_execution(
+                execution_id,
+                "failed",
+                error="execution stopped at the iteration budget",
+            )
+            await sink.emit(
+                "execution_incomplete",
+                {
+                    "status": execution.status,
+                    "output": result.output_text,
+                    "usage": result.usage,
+                    "stop_reason": (result.output_payload or {}).get("stop_reason"),
+                    "agent_id": execution.agent_id,
+                    "agent_version": execution.agent_version,
+                },
+            )
+            return
+
         if result.status == "completed":
             execution.status = ExecutionStatus.COMPLETED.value
             execution.finished_at = _now()
@@ -994,6 +1045,7 @@ class ExecutionService:
             await self.db.refresh(execution)
             if execution.status in {
                 ExecutionStatus.COMPLETED.value,
+                ExecutionStatus.INCOMPLETE.value,
                 ExecutionStatus.FAILED.value,
                 ExecutionStatus.CANCELLED.value,
             }:
@@ -1018,6 +1070,7 @@ class ExecutionService:
                 return
             if execution.status in {
                 ExecutionStatus.COMPLETED.value,
+                ExecutionStatus.INCOMPLETE.value,
                 ExecutionStatus.FAILED.value,
             }:
                 return

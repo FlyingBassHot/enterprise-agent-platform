@@ -13,6 +13,7 @@ const statusMap: Record<string, { label: string; type: string }> = {
   running: { label: '执行中', type: 'primary' },
   waiting_approval: { label: '待审批', type: 'warning' },
   completed: { label: '已完成', type: 'success' },
+  incomplete: { label: '未完成（可继续）', type: 'warning' },
   failed: { label: '失败', type: 'danger' },
   cancelled: { label: '已取消', type: 'info' },
   approved: { label: '已批准', type: 'success' },

@@ -15,6 +15,7 @@ export interface StreamOptions {
 
 const TERMINAL_EVENTS: Record<string, true> = {
   execution_completed: true,
+  execution_incomplete: true,
   execution_failed: true,
   execution_cancelled: true,
 }

@@ -517,6 +517,19 @@ function handleStreamEvent(event: ExecutionEventDto) {
       void finalizeExecution('completed')
       break
     }
+    case 'execution_incomplete': {
+      stopDraftStreaming()
+      if (execution.value) {
+        execution.value = {
+          ...execution.value,
+          status: 'incomplete',
+          token_usage: usageFrom(payload.usage),
+        }
+      }
+      liveStatus.value = 'incomplete'
+      void finalizeExecution('incomplete')
+      break
+    }
     case 'execution_failed': {
       stopDraftStreaming()
       chatError.value = String(payload.error || '执行失败')

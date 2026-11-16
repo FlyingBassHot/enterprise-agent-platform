@@ -26,6 +26,15 @@ class AgentState(TypedDict, total=False):
     error: str | None
     usage: dict[str, int]
     knowledge_citations: list[dict[str, Any]]
+    # Tool descriptors are resolved once per run so every turn sees the same
+    # tool prefix (provider prompt caching) and the loop spends no DB roundtrip.
+    tool_descriptors: list[dict[str, Any]]
+    # Current iteration budget; resume may raise it.
+    max_iterations: int
+    # Model-maintained plan, re-injected on every model call.
+    plan: list[dict[str, str]]
+    # Why the loop stopped early; "max_iterations" yields an incomplete result.
+    stop_reason: str | None
 
 
 @dataclass(slots=True)

@@ -22,6 +22,8 @@ class ExecutionStatus(StrEnum):
     RUNNING = "running"
     WAITING_APPROVAL = "waiting_approval"
     COMPLETED = "completed"
+    # Stopped at the iteration budget with a usable partial answer; resumable.
+    INCOMPLETE = "incomplete"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -105,6 +107,7 @@ class WorkflowExecutionStatus(StrEnum):
 
 TERMINAL_EXECUTION_STATUSES = {
     ExecutionStatus.COMPLETED,
+    ExecutionStatus.INCOMPLETE,
     ExecutionStatus.FAILED,
     ExecutionStatus.CANCELLED,
 }

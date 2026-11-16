@@ -13,11 +13,13 @@ from httpx import AsyncClient
 from app.core.config import get_settings
 from app.core.contracts import ToolContext, ToolDescriptor, UserContext
 from app.core.exceptions import PermissionDeniedError, ToolError
+from app.core.plan import PLAN_TOOL_NAME
 from app.modules.execution.service import _TASKS
 from app.modules.runtime.checkpoint import close_checkpointer
 from app.modules.tool.builtin import TOOL_NAMES, register_builtin_tools
 from app.modules.tool.builtin import http as builtin_http
 from app.modules.tool.builtin.artifacts import read_artifact_tool
+from app.modules.tool.builtin.plan import update_plan_tool
 from app.modules.tool.builtin.time import current_time_tool
 from app.modules.tool.models import Tool
 from app.modules.tool.registry import NativeToolRegistry
@@ -57,6 +59,9 @@ async def test_builtin_descriptors_register() -> None:
     http_schema = by_name["platform_http_request"].input_schema
     assert http_schema["properties"]["method"]["enum"] == ["GET", "POST"]
     assert http_schema["required"] == ["url"]
+    plan_schema = by_name[PLAN_TOOL_NAME].input_schema
+    assert plan_schema["required"] == ["plan"]
+    assert by_name[PLAN_TOOL_NAME].risk_level == "low"
 
 
 async def test_current_time_defaults_to_utc() -> None:
@@ -72,6 +77,24 @@ async def test_current_time_uses_iana_zone() -> None:
     output = await current_time_tool({"tz": "Asia/Shanghai"}, _ctx())
     assert output["utc_offset"] == "+08:00"
     assert datetime.fromisoformat(output["iso8601"]).utcoffset().total_seconds() == 8 * 3600
+
+
+async def test_update_plan_tool_validates_and_returns_plan() -> None:
+    plan = [
+        {"id": "1", "title": "读取附件", "status": "in_progress"},
+        {"id": "2", "title": "汇总", "status": "pending"},
+    ]
+    output = await update_plan_tool(
+        {"plan": plan}, _ctx(tool_name=PLAN_TOOL_NAME)
+    )
+    assert output["count"] == 2
+    assert output["plan"] == plan
+
+    with pytest.raises(ToolError, match="Invalid plan"):
+        await update_plan_tool(
+            {"plan": [{"id": "1", "title": "坏状态", "status": "doneish"}]},
+            _ctx(tool_name=PLAN_TOOL_NAME),
+        )
 
 
 async def test_current_time_rejects_unknown_zone() -> None:

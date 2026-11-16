@@ -22,6 +22,7 @@ from app.core.contracts import (
     RetrievalChunk,
     SkillContext,
     SkillGateway,
+    ToolDescriptor,
     ToolGateway,
     UserContext,
 )
@@ -97,10 +98,16 @@ class RuntimeService:
         )
 
     @staticmethod
-    def _config(execution_id: str, snapshot: AgentSnapshot | None) -> dict[str, Any]:
+    def _config(
+        execution_id: str,
+        snapshot: AgentSnapshot | None,
+        *,
+        iterations: int | None = None,
+    ) -> dict[str, Any]:
         settings = get_settings()
         iterations = int(
-            (snapshot.max_iterations if snapshot else settings.execution_max_iterations)
+            iterations
+            or (snapshot.max_iterations if snapshot else settings.execution_max_iterations)
             or settings.execution_max_iterations
         )
         return {
@@ -168,6 +175,13 @@ class RuntimeService:
             knowledge_chunks=chunks,
             knowledge_context_chars=get_settings().knowledge_context_chars,
         )
+        descriptors: list[ToolDescriptor] = []
+        if snapshot.tool_names:
+            try:
+                descriptors = await self.tool_gateway.describe(snapshot.tool_names, user)
+            except Exception as exc:  # noqa: BLE001 - registry failure is fatal here
+                return RuntimeResult(status="failed", error=f"failed to resolve tools: {exc}")
+        settings = get_settings()
         state: AgentState = {
             "execution_id": execution_id,
             "agent_snapshot": snapshot.model_dump(),
@@ -176,6 +190,12 @@ class RuntimeService:
             "steps": 0,
             "final_output": None,
             "error": None,
+            "tool_descriptors": [descriptor.model_dump() for descriptor in descriptors],
+            "max_iterations": int(
+                snapshot.max_iterations or settings.execution_max_iterations
+            ),
+            "plan": [],
+            "stop_reason": None,
             "usage": {},
             "knowledge_citations": [
                 {
@@ -215,11 +235,28 @@ class RuntimeService:
         snapshot: AgentSnapshot | None = None,
         decision: dict[str, Any] | None = None,
         interrupt_id: str | None = None,
+        extra_iterations: int | None = None,
     ) -> RuntimeResult:
         checkpointer = await self._resolve_checkpointer()
         skills = await self._resolve_skills(snapshot, user) if snapshot else []
         graph = self._graph(snapshot, user, checkpointer, skills)  # type: ignore[arg-type]
         config = self._config(execution_id, snapshot)
+        if extra_iterations and decision is None and interrupt_id is None:
+            # Raising the budget before resuming is what turns an exhausted run
+            # into progress instead of an immediate second stop. The graph ended
+            # on the agent node, so re-enter through "tools" to schedule it again.
+            current = await self._current_iterations(graph, config, snapshot)
+            extended = min(200, current + max(1, int(extra_iterations)))
+            await graph.aupdate_state(
+                config,
+                {
+                    "max_iterations": extended,
+                    "stop_reason": None,
+                    "final_output": None,
+                },
+                as_node="tools",
+            )
+            config = self._config(execution_id, snapshot, iterations=extended)
         if decision is None and interrupt_id is None:
             graph_input: Any = None
         elif interrupt_id:
@@ -241,6 +278,24 @@ class RuntimeService:
             return RuntimeResult(status="failed", error=f"runtime error: {exc}")
         return await self._result_from_state(result, execution_id)
 
+    async def _current_iterations(
+        self,
+        graph: Any,
+        config: dict[str, Any],
+        snapshot: AgentSnapshot | None,
+    ) -> int:
+        settings = get_settings()
+        fallback = int(
+            (snapshot.max_iterations if snapshot else settings.execution_max_iterations)
+            or settings.execution_max_iterations
+        )
+        try:
+            saved = await graph.aget_state(config)
+        except Exception:  # noqa: BLE001 - missing checkpoint means nothing to extend
+            return fallback
+        values = dict(getattr(saved, "values", {}) or {})
+        return int(values.get("max_iterations") or fallback)
+
     async def _result_from_state(self, result: Any, execution_id: str) -> RuntimeResult:
         state: dict[str, Any] = result if isinstance(result, dict) else {}
         interrupts = state.get("__interrupt__") or []
@@ -249,11 +304,16 @@ class RuntimeService:
         last_assistant = next(
             (item for item in reversed(messages) if item.get("role") == "assistant"), {}
         )
+        stop_reason = state.get("stop_reason")
         output_payload = {
             "steps": state.get("steps", 0),
             "tool_calls": last_assistant.get("tool_calls") or [],
             "knowledge_citations": state.get("knowledge_citations") or [],
+            "plan": state.get("plan") or [],
         }
+        if stop_reason:
+            output_payload["stop_reason"] = stop_reason
+            output_payload["partial"] = stop_reason == "max_iterations"
         if interrupts:
             approval_ids: list[str] = []
             interrupt_map: dict[str, str] = {}
@@ -288,6 +348,13 @@ class RuntimeService:
                 error=str(error),
             )
         final_output = state.get("final_output")
+        if stop_reason == "max_iterations" and final_output is not None:
+            return RuntimeResult(
+                status="incomplete",
+                output_text=str(final_output),
+                output_payload=output_payload,
+                usage=usage,
+            )
         if final_output is None:
             return RuntimeResult(
                 status="failed",
