@@ -38,6 +38,8 @@ const BADGES: Record<string, { label: string; type: TagType; mark?: string }> = 
   approval_required: { label: '待审批', type: 'warning' },
   approval_resolved: { label: '审批结果', type: 'info' },
   plan_updated: { label: '计划更新', type: 'info' },
+  verification_started: { label: '开始校验', type: 'info' },
+  verification_completed: { label: '校验结果', type: 'warning' },
   context_compacted: { label: '上下文压缩', type: 'info' },
   execution_completed: { label: '执行完成', type: 'success' },
   execution_incomplete: { label: '未完成（预算耗尽）', type: 'warning' },

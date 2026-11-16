@@ -19,6 +19,13 @@ class PromptBinding(BaseModel):
     variables: dict[str, str] = Field(default_factory=dict)
 
 
+class VerificationSettings(BaseModel):
+    enabled: bool = True
+    require_plan_completion: bool = True
+    require_citations: bool = False
+    max_retries: int = Field(default=1, ge=0, le=2)
+
+
 class ExecutionSettings(BaseModel):
     mode: Literal["agent", "workflow", "hybrid"] = "agent"
     workflow_id: str | None = None
@@ -27,6 +34,7 @@ class ExecutionSettings(BaseModel):
     approval_risk_levels: list[Literal["low", "medium", "high", "critical"]] = Field(
         default_factory=lambda: ["high", "critical"]
     )
+    verification: VerificationSettings = Field(default_factory=VerificationSettings)
     streaming: bool = True
 
 

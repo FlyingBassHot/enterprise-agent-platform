@@ -34,8 +34,12 @@ class AgentState(TypedDict, total=False):
     max_iterations: int
     # Model-maintained plan, re-injected on every model call.
     plan: list[dict[str, str]]
-    # Why the loop stopped early; "max_iterations" yields an incomplete result.
+    # Why the loop stopped early; "max_iterations" / "verification_failed"
+    # yield an incomplete result.
     stop_reason: str | None
+    verification_status: str | None
+    verification_issues: list[dict[str, Any]]
+    verification_attempts: int
 
 
 @dataclass(slots=True)
@@ -392,6 +396,18 @@ def compact_messages(
         message["content"] = trimmed
 
     return result, saved
+
+
+def completion_feedback(issues: Sequence[dict[str, Any]]) -> str:
+    """Actionable message injected when a completion claim fails verification."""
+
+    lines = [
+        "[系统校验] 你声称完成，但确定性检查未通过。请先修复下列问题，"
+        "再给出最终答案；不要重复相同的完成声明。",
+    ]
+    for issue in issues:
+        lines.append(f"- {issue.get('code')}: {issue.get('message')}")
+    return "\n".join(lines)
 
 
 def truncate_tool_output(output: Any) -> str:

@@ -48,6 +48,7 @@ from app.modules.execution.schemas import (
     MessageOut,
 )
 from app.modules.execution.tasks import TaskService
+from app.modules.execution.verification import TaskVerifier
 from app.modules.permission.service import PermissionService
 from app.modules.runtime.context import render_user_text
 from app.modules.runtime.service import RuntimeResult, RuntimeService
@@ -98,6 +99,7 @@ class ExecutionService:
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         checkpointer: Any = None,
         task_gateway: Any = None,
+        verifier_gateway: Any = None,
     ) -> None:
         self.db = db
         self.repo = ExecutionRepository(db)
@@ -110,6 +112,7 @@ class ExecutionService:
         self.session_factory = session_factory or get_session_factory()
         self._checkpointer = checkpointer
         self._task_gateway = task_gateway
+        self._verifier_gateway = verifier_gateway
 
     # ------------------------------------------------------------------ helpers
 
@@ -727,6 +730,7 @@ class ExecutionService:
                 session_factory=self.session_factory,
                 checkpointer=self._checkpointer,
                 task_gateway=self._task_gateway,
+                verifier_gateway=self._verifier_gateway,
             )
             await worker._execute(
                 execution_id,
@@ -827,6 +831,7 @@ class ExecutionService:
                         knowledge_gateway=knowledge_gateway,
                         checkpointer=self._checkpointer,
                         task_gateway=self._task_gateway or TaskService(self.db),
+                        verifier_gateway=self._verifier_gateway or TaskVerifier(self.db),
                     )
                     if mode == "start":
                         result = await runtime.run(

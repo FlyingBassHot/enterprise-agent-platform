@@ -96,9 +96,13 @@ async def test_plan_tool_persists_steps_on_the_task(
     client: AsyncClient, admin: dict[str, str]
 ) -> None:
     suffix = uuid.uuid4().hex[:8]
-    plan = [
+    plan_open = [
         {"id": "1", "title": "读取附件", "status": "in_progress"},
         {"id": "2", "title": "汇总并回答", "status": "pending"},
+    ]
+    plan_done = [
+        {"id": "1", "title": "读取附件", "status": "done"},
+        {"id": "2", "title": "汇总并回答", "status": "done"},
     ]
     provider = await client.post(
         f"{API}/model-providers",
@@ -115,8 +119,23 @@ async def test_plan_tool_persists_steps_on_the_task(
             "model_name": "mock-agent",
             "extra": {
                 "script": [
-                    {"tool_calls": [{"name": "platform_update_plan", "arguments": {"plan": plan}}]},
-                    {"content": "计划已建立"},
+                    {
+                        "tool_calls": [
+                            {
+                                "name": "platform_update_plan",
+                                "arguments": {"plan": plan_open},
+                            }
+                        ]
+                    },
+                    {
+                        "tool_calls": [
+                            {
+                                "name": "platform_update_plan",
+                                "arguments": {"plan": plan_done},
+                            }
+                        ]
+                    },
+                    {"content": "计划已完成"},
                 ]
             },
         },
@@ -163,15 +182,17 @@ async def test_plan_tool_persists_steps_on_the_task(
     execution = created.json()
     detail = await _wait_for(client, admin, execution["id"])
     assert detail["status"] == "completed", detail
-    assert detail["output_text"] == "计划已建立"
+    assert detail["output_text"] == "计划已完成"
+    assert detail["output_payload"]["verification"]["status"] == "passed"
 
     task = await client.get(f"{API}/tasks/{execution['task_id']}", headers=admin)
     assert task.status_code == 200, task.text
     steps = task.json()["steps"]
     assert [(step["step_key"], step["title"], step["status"]) for step in steps] == [
-        ("1", "读取附件", "in_progress"),
-        ("2", "汇总并回答", "pending"),
+        ("1", "读取附件", "done"),
+        ("2", "汇总并回答", "done"),
     ]
+    assert all(step["verified"] is True for step in steps)
     assert detail["steps"] == steps
 
 
@@ -235,3 +256,98 @@ async def test_apply_plan_is_idempotent_and_prunes_removed_steps(
         await tasks.apply_plan_to_task(
             task.id, [{"id": "x", "title": "", "status": "pending"}]
         )
+
+
+async def test_verification_blocks_premature_completion(
+    client: AsyncClient, admin: dict[str, str]
+) -> None:
+    suffix = uuid.uuid4().hex[:8]
+    script = [
+        {
+            "tool_calls": [
+                {
+                    "name": "platform_update_plan",
+                    "arguments": {
+                        "plan": [
+                            {"id": "1", "title": "未完成步骤", "status": "in_progress"}
+                        ]
+                    },
+                }
+            ]
+        },
+        {"content": "我已完成"},
+        # Verification re-asks once; the mock replays this step.
+        {"content": "我已完成"},
+    ]
+    provider = await client.post(
+        f"{API}/model-providers",
+        headers=admin,
+        json={"name": f"verify-provider-{suffix}", "provider_type": "mock"},
+    )
+    assert provider.status_code == 201, provider.text
+    config = await client.post(
+        f"{API}/model-configs",
+        headers=admin,
+        json={
+            "name": f"verify-config-{suffix}",
+            "provider_id": provider.json()["id"],
+            "model_name": "mock-agent",
+            "extra": {"script": script},
+        },
+    )
+    assert config.status_code == 201, config.text
+    prompt = await client.post(
+        f"{API}/prompts", headers=admin, json={"name": f"verify-prompt-{suffix}"}
+    )
+    version = await client.post(
+        f"{API}/prompts/{prompt.json()['id']}/versions",
+        headers=admin,
+        json={"system_prompt": "你是校验测试助手", "publish": True},
+    )
+    agent = await client.post(
+        f"{API}/agents",
+        headers=admin,
+        json={
+            "name": f"verify-agent-{suffix}",
+            "config": {
+                "model": {"config_id": config.json()["id"]},
+                "prompt": {
+                    "prompt_id": prompt.json()["id"],
+                    "version_id": version.json()["id"],
+                },
+                "tools": ["platform_update_plan"],
+                "retrieval": {"enabled": False},
+            },
+        },
+    )
+    assert agent.status_code == 201, agent.text
+    published = await client.post(
+        f"{API}/agents/{agent.json()['id']}/publish", headers=admin
+    )
+    assert published.status_code == 200, published.text
+
+    created = await client.post(
+        f"{API}/executions",
+        headers=admin,
+        json={"agent_id": agent.json()["id"], "input": "做个任务"},
+    )
+    assert created.status_code == 201, created.text
+    execution = created.json()
+    detail = await _wait_for(client, admin, execution["id"])
+
+    assert detail["status"] == "incomplete", detail
+    assert detail["output_text"] == "我已完成"
+    verification = detail["output_payload"]["verification"]
+    assert verification["status"] == "failed"
+    assert verification["issues"][0]["code"] == "plan_incomplete"
+
+    events = await client.get(
+        f"{API}/executions/{execution['id']}/events", headers=admin
+    )
+    types = [event["type"] for event in events.json()]
+    assert types.count("verification_completed") == 2
+
+    task = await client.get(f"{API}/tasks/{execution['task_id']}", headers=admin)
+    step = task.json()["steps"][0]
+    assert step["status"] == "in_progress"
+    assert step["verified"] is None

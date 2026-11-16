@@ -145,6 +145,12 @@ class AgentService:
             max_iterations=config.execution.max_iterations,
             timeout_seconds=config.execution.timeout_seconds,
             approval_risk_levels=list(config.execution.approval_risk_levels),
+            verification_enabled=config.execution.verification.enabled,
+            verification_require_plan_completion=(
+                config.execution.verification.require_plan_completion
+            ),
+            verification_require_citations=config.execution.verification.require_citations,
+            verification_max_retries=config.execution.verification.max_retries,
             workflow_id=(
                 workflow_snapshot.workflow_id if workflow_snapshot else None
             ),

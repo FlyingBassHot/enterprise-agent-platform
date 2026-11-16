@@ -75,13 +75,13 @@ START → agent(decide) ──有 tool_calls──→ tools(act) → agent …
 | Observe | 加载历史 + 知识检索 + 计划注入 + 上下文压缩 | `build_initial_messages`、`compact_messages`、`render_plan_section` |
 | Decide | 一次流式模型调用，可能返回文本与多个 tool_calls | `agent_node` |
 | Act | 审批解析 → 顺序执行每个 tool_call → 回填观察 | `tools_node` |
-| Verify | 检查结果是否支持"完成"声明 | **未实现（S4）** |
+| Verify | 确定性终检：空答案 / 计划未完成 / 缺少引用 | 已实现（`TaskVerifier`），仅 Level 1–2 |
 
 已知限制（明确记录，避免误以为已具备）：
 
 - 同一轮的多个 tool_call **顺序执行**，无并行。
 - 无循环检测（同工具同参数重复调用不做干预，仅受预算约束）。
-- `Verify` 缺位：模型说完成即完成。
+- Level 3（目标级）验证仍由人工承担；Verifier 只做机器可判定项。
 
 ---
 
@@ -109,9 +109,12 @@ START → agent(decide) ──有 tool_calls──→ tools(act) → agent …
 
 1. 存在 `__interrupt__` → `waiting_approval`
 2. `state.error` → `failed`
-3. `stop_reason == "max_iterations"` 且有 `final_output` → **`incomplete`**
+3. `stop_reason ∈ {max_iterations, verification_failed}` 且有 `final_output` → **`incomplete`**
 4. `final_output is None` → `failed`（"finished without producing an answer"）
 5. 否则 → `completed`
+
+**不变量 I2（补充）**：验证未通过且重试耗尽时，答案保留、执行判 `incomplete`；
+Verifier 永远不能把执行直接判为 `completed` 或 `failed`。
 
 **不变量 I2**：撞预算时若有可用文本，绝不判 `failed`；若无文本，绝不判 `completed`。
 
@@ -178,6 +181,24 @@ START → agent(decide) ──有 tool_calls──→ tools(act) → agent …
 
 ---
 
+## 9.1 完成校验契约
+
+模型不再拥有"宣布完成"的权力，只有 Verifier 能确认完成。
+
+| 阶段 | 行为 |
+|---|---|
+| 触发 | `agent` 节点返回纯文本（无 tool_calls）后进入 `verify` 节点 |
+| 检查（Level 1–2，确定性） | `empty_answer`、`plan_incomplete`、`missing_citations`（可选） |
+| 通过 | 执行收尾 `completed`；已 `done` 的步骤写 `verified=true` |
+| 不通过且还有重试 | 注入 `[系统校验]` 反馈消息（含 issue 列表）回 `agent` 重做；最多 `execution.verification.max_retries` 次（0–2，默认 1） |
+| 不通过且重试耗尽 | 保留答案，执行判 `incomplete`，`stop_reason=verification_failed`，issues 写入 `output_payload.verification` |
+| 关闭 | `execution.verification.enabled=false` 时校验状态为 `skipped` |
+
+Verifier 通过 `VerifierGateway` 注入，runtime 不 import 领域模块；实现位于
+`app/modules/execution/verification.py`。校验失败不会删除步骤的 `result`，也不会伪造 `verified`。
+
+**不变量 I8**：Verifier 输入只来自本执行的计划、答案与引用；同一输入必须得到同一结论。
+
 ## 10. 上下文契约
 
 投影层级（只影响本轮发给模型的内容）：
@@ -207,6 +228,8 @@ START → agent(decide) ──有 tool_calls──→ tools(act) → agent …
 | `message_completed` | 一轮模型返回 | content, tool_calls, finish_reason | 否 |
 | `plan_updated` | 计划变更 | plan | 否 |
 | `context_compacted` | 压缩生效 | chars_saved, budget_chars | 否 |
+| `verification_started` | 进入终检 | attempt, plan_steps, citations, answer_chars | 否 |
+| `verification_completed` | 终检结束 | status, attempt, next_action, issues | 否 |
 | `tool_call_started` | 执行前 | tool_call_id, tool_name, arguments(脱敏) | 否 |
 | `tool_call_completed` | 执行后 | tool_call_id, status, ok, duration_ms, error | 否 |
 | `approval_required` | 需审批 | approval_id, tool_call_id, risk_level | 否（挂起） |
@@ -244,14 +267,15 @@ START → agent(decide) ──有 tool_calls──→ tools(act) → agent …
 | 工具成功但结果丢失 | 无处理 | 需要工具侧幂等键（`ToolContext` 已有位置） |
 | 上下文达上限 | 压缩旧工具输出与旧 assistant 文本 | 压缩后仍可能超窗，无硬失败保护 |
 | 访问未授权资源 | `permission_denied`，不可重试 | 无统一 ABAC 事件审计 |
-| 任务已完成但模型继续调用工具 | 继续执行直到预算 | 无"完成声明 + Verifier 拒绝"机制（S4） |
+| 模型提前宣称完成 | 终检失败 → 回退一次 → 仍失败则 `incomplete` | Level 3 目标级判断仍靠人工 |
+| 任务已完成但模型继续调用工具 | 继续执行直到预算 | 无"完成即停机"优化（可接受） |
 
 ---
 
 ## 14. 待架构 Review 拍板
 
 1. **主预算**：切到 token 预算（需要每轮 `usage` 反馈 + 剩余预算注入），还是保留轮次为主？
-2. **Verifier 语义**：验证失败时"回退一轮"（最多 1 次）还是"直接 `incomplete` 交人工"？
+2. ~~**Verifier 语义**~~（已定）：Level 1–2 失败回退一次，重试耗尽判 `incomplete` 交人工。
 3. **Environment 范围**：v1 只认 artifact workspace（现有能力），还是同时定义 FileSystemEnvironment / CodeExecutionEnvironment 的接口（无沙箱时只能定义不能实现）？
 
 ---
@@ -262,3 +286,4 @@ START → agent(decide) ──有 tool_calls──→ tools(act) → agent …
 |---|---|
 | 2026-11-16 | v1 Draft：状态机、相位、终止顺序、预算、观察契约、事件、不变量、故障矩阵 |
 | 2026-11-16 | 计划改为 Task 级持久化（`agent_tasks` / `task_steps`），新增 `TaskGateway` 契约 |
+| 2026-11-16 | 新增 `verify` 相位与 `VerifierGateway`：确定性终检、回退一次、耗尽判 `incomplete` |

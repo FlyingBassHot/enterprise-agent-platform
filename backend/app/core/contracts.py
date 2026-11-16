@@ -196,6 +196,10 @@ class AgentSnapshot(BaseModel):
     max_iterations: int = 12
     timeout_seconds: int = 600
     approval_risk_levels: list[str] = Field(default_factory=lambda: ["high", "critical"])
+    verification_enabled: bool = True
+    verification_require_plan_completion: bool = True
+    verification_require_citations: bool = False
+    verification_max_retries: int = 1
     workflow_id: str | None = None
     workflow_version_id: str | None = None
     required_permissions: list[str] = Field(default_factory=list)
@@ -277,6 +281,34 @@ class ToolGateway(Protocol):
     async def execute(
         self, invocation: ToolInvocation, user: UserContext
     ) -> ToolExecutionResult: ...
+
+
+class VerificationIssue(BaseModel):
+    code: str
+    message: str
+    step_ids: list[str] = Field(default_factory=list)
+
+
+class VerificationOutcome(BaseModel):
+    """Deterministic verdict on a completion claim."""
+
+    status: Literal["passed", "failed"]
+    issues: list[VerificationIssue] = Field(default_factory=list)
+    next_action: Literal[
+        "complete", "retry", "replan", "request_input", "request_approval", "fail"
+    ] = "complete"
+
+
+class VerifierGateway(Protocol):
+    async def verify(
+        self,
+        *,
+        execution_id: str,
+        snapshot: AgentSnapshot,
+        plan: Sequence[dict[str, str]],
+        output_text: str,
+        citations: Sequence[dict[str, Any]],
+    ) -> VerificationOutcome: ...
 
 
 class TaskGateway(Protocol):

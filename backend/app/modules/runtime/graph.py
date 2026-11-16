@@ -34,6 +34,7 @@ from app.modules.runtime.context import (
     LLMCallRecord,
     accumulate_usage,
     compact_messages,
+    completion_feedback,
     mask_arguments,
     to_chat_messages,
     tool_error_content,
@@ -64,6 +65,7 @@ def build_agent_graph(
     skills: list[SkillContext] | None = None,
     checkpointer: Any = None,
     task_gateway: Any = None,
+    verifier_gateway: Any = None,
 ) -> CompiledStateGraph:
     settings = get_settings()
 
@@ -509,11 +511,87 @@ def build_agent_graph(
             update["plan"] = plan
         return update
 
+    async def verify_node(state: AgentState) -> dict[str, Any]:
+        snapshot = AgentSnapshot.model_validate(state["agent_snapshot"])
+        execution_id = state.get("execution_id", "")
+        attempts = int(state.get("verification_attempts", 0)) + 1
+        if not snapshot.verification_enabled or verifier_gateway is None:
+            return {
+                "verification_status": "skipped",
+                "verification_issues": [],
+                "verification_attempts": attempts,
+            }
+
+        plan = list(state.get("plan") or [])
+        citations = list(state.get("knowledge_citations") or [])
+        text = str(state.get("final_output") or "")
+        await sink.emit(
+            "verification_started",
+            {
+                "attempt": attempts,
+                "plan_steps": len(plan),
+                "citations": len(citations),
+                "answer_chars": len(text),
+            },
+        )
+        outcome = await verifier_gateway.verify(
+            execution_id=execution_id,
+            snapshot=snapshot,
+            plan=plan,
+            output_text=text,
+            citations=citations,
+        )
+        issues = [issue.model_dump() for issue in outcome.issues]
+        await sink.emit(
+            "verification_completed",
+            {
+                "status": outcome.status,
+                "attempt": attempts,
+                "next_action": outcome.next_action,
+                "issues": issues,
+            },
+        )
+        if outcome.status == "passed":
+            return {
+                "verification_status": "passed",
+                "verification_issues": [],
+                "verification_attempts": attempts,
+            }
+
+        max_retries = max(0, int(snapshot.verification_max_retries))
+        if attempts <= max_retries:
+            messages = list(state.get("messages", []))
+            messages.append(
+                {"role": "system", "content": completion_feedback(issues)}
+            )
+            return {
+                "verification_status": "failed",
+                "verification_issues": issues,
+                "verification_attempts": attempts,
+                "messages": messages,
+                "final_output": None,
+                "stop_reason": None,
+            }
+        # Out of retries: keep the answer, let the execution end as incomplete.
+        return {
+            "verification_status": "failed",
+            "verification_issues": issues,
+            "verification_attempts": attempts,
+            "stop_reason": "verification_failed",
+        }
+
     def route_after_agent(state: AgentState) -> str:
         if state.get("error"):
             return END
         if state.get("pending_tool_calls"):
             return "tools"
+        return "verify"
+
+    def route_after_verify(state: AgentState) -> str:
+        if state.get("stop_reason") == "verification_failed":
+            return END
+        if state.get("verification_status") == "failed":
+            return "agent"
         return END
 
     def route_after_tools(state: AgentState) -> str:
@@ -524,9 +602,15 @@ def build_agent_graph(
     graph = StateGraph(AgentState)
     graph.add_node("agent", agent_node)
     graph.add_node("tools", tools_node)
+    graph.add_node("verify", verify_node)
     graph.add_edge(START, "agent")
-    graph.add_conditional_edges("agent", route_after_agent, {"tools": "tools", END: END})
+    graph.add_conditional_edges(
+        "agent", route_after_agent, {"tools": "tools", "verify": "verify", END: END}
+    )
     graph.add_conditional_edges("tools", route_after_tools, {"agent": "agent", END: END})
+    graph.add_conditional_edges(
+        "verify", route_after_verify, {"agent": "agent", END: END}
+    )
     return graph.compile(checkpointer=checkpointer)
 
 

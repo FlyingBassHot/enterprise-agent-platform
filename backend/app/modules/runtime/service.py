@@ -26,6 +26,7 @@ from app.core.contracts import (
     ToolDescriptor,
     ToolGateway,
     UserContext,
+    VerifierGateway,
 )
 from app.core.logging import get_logger
 from app.modules.runtime.checkpoint import get_checkpointer
@@ -66,6 +67,7 @@ class RuntimeService:
         knowledge_gateway: KnowledgeGateway | None = None,
         checkpointer: Any = None,
         task_gateway: TaskGateway | None = None,
+        verifier_gateway: VerifierGateway | None = None,
     ) -> None:
         self.model_gateway = model_gateway
         self.tool_gateway = tool_gateway
@@ -73,6 +75,7 @@ class RuntimeService:
         self.skill_gateway = skill_gateway
         self.knowledge_gateway = knowledge_gateway
         self.task_gateway = task_gateway
+        self.verifier_gateway = verifier_gateway
         self._checkpointer = checkpointer
 
     async def _resolve_checkpointer(self) -> Any:
@@ -99,6 +102,7 @@ class RuntimeService:
             skills=skills,
             checkpointer=checkpointer,
             task_gateway=self.task_gateway,
+            verifier_gateway=self.verifier_gateway,
         )
 
     @staticmethod
@@ -207,6 +211,9 @@ class RuntimeService:
             ),
             "plan": plan,
             "stop_reason": None,
+            "verification_status": None,
+            "verification_issues": [],
+            "verification_attempts": 0,
             "usage": {},
             "knowledge_citations": [
                 {
@@ -316,11 +323,17 @@ class RuntimeService:
             (item for item in reversed(messages) if item.get("role") == "assistant"), {}
         )
         stop_reason = state.get("stop_reason")
+        verification_status = state.get("verification_status")
         output_payload = {
             "steps": state.get("steps", 0),
             "tool_calls": last_assistant.get("tool_calls") or [],
             "knowledge_citations": state.get("knowledge_citations") or [],
             "plan": state.get("plan") or [],
+            "verification": {
+                "status": verification_status or "skipped",
+                "attempts": state.get("verification_attempts", 0),
+                "issues": state.get("verification_issues") or [],
+            },
         }
         if stop_reason:
             output_payload["stop_reason"] = stop_reason
@@ -359,7 +372,7 @@ class RuntimeService:
                 error=str(error),
             )
         final_output = state.get("final_output")
-        if stop_reason == "max_iterations" and final_output is not None:
+        if stop_reason in {"max_iterations", "verification_failed"} and final_output is not None:
             return RuntimeResult(
                 status="incomplete",
                 output_text=str(final_output),

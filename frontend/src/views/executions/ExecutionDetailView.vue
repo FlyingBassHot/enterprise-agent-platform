@@ -103,6 +103,20 @@ const pendingApprovals = computed(
   () => detail.value?.approvals.filter((item) => item.status === 'pending') || [],
 )
 
+const verification = computed<{
+  status?: string
+  attempts?: number
+  issues?: Array<{ code?: string; message?: string }>
+} | null>(() => {
+  const payload = detail.value?.output_payload as Record<string, unknown> | null | undefined
+  const value = payload?.verification
+  return value && typeof value === 'object' ? (value as {
+    status?: string
+    attempts?: number
+    issues?: Array<{ code?: string; message?: string }>
+  }) : null
+})
+
 const usage = computed<Record<string, number>>(() => detail.value?.token_usage || {})
 
 const durationMs = computed(() => {
@@ -525,6 +539,20 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
+        <div
+          v-if="verification && verification.status === 'failed'"
+          class="verify-block"
+        >
+          <div class="steps-title">
+            完成校验未通过（第 {{ verification.attempts || 0 }} 次）
+          </div>
+          <ul class="verify-issues">
+            <li v-for="(issue, index) in verification.issues || []" :key="index">
+              <span class="mono">{{ issue.code }}</span>：{{ issue.message }}
+            </li>
+          </ul>
+        </div>
+
         <div class="meta-grid">
           <div class="meta-item">
             <span class="meta-label">{{ detail.agent_id ? 'Agent' : detail.workflow_id ? 'Workflow' : 'Agent' }}</span>
@@ -828,6 +856,20 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.verify-block {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--el-color-warning-light-5);
+  border-radius: 8px;
+  background: var(--el-color-warning-light-9);
+}
+
+.verify-issues {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--el-text-color-regular);
 }
 
 .steps-block {
