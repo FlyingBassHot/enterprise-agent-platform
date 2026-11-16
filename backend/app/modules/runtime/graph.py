@@ -33,8 +33,10 @@ from app.modules.runtime.context import (
     ExecutionSink,
     LLMCallRecord,
     accumulate_usage,
+    compact_messages,
     mask_arguments,
     to_chat_messages,
+    tool_error_content,
     truncate_tool_output,
 )
 
@@ -104,7 +106,21 @@ def build_agent_graph(
                 "stop_reason": "max_iterations",
             }
 
-        chat_messages = to_chat_messages(messages)
+        compacted, saved = compact_messages(
+            messages,
+            budget_chars=int(settings.context_char_budget),
+            keep_recent=int(settings.context_keep_recent_messages),
+        )
+        if saved > 0:
+            await sink.emit(
+                "context_compacted",
+                {
+                    "chars_saved": saved,
+                    "budget_chars": int(settings.context_char_budget),
+                    "messages": len(messages),
+                },
+            )
+        chat_messages = to_chat_messages(compacted)
         plan = list(state.get("plan") or [])
         if plan:
             # Re-inject the plan on every turn: it is state, not history, so it
@@ -347,13 +363,11 @@ def build_agent_graph(
 
             if not decision.get("approved"):
                 content = json.dumps(
-                    {
-                        "status": "rejected",
-                        "ok": False,
-                        "tool": name,
-                        "comment": decision.get("comment", ""),
-                        "message": "The user rejected this tool call; do not retry it.",
-                    },
+                    tool_error_content(
+                        "approval_rejected",
+                        error=decision.get("comment") or "rejected by user",
+                        tool=name,
+                    ),
                     ensure_ascii=False,
                 )
                 tool_messages.append(
@@ -383,7 +397,9 @@ def build_agent_graph(
                     else "unknown or disabled tool"
                 )
                 content = json.dumps(
-                    {"status": "failed", "ok": False, "error": f"{reason}: {name}"},
+                    tool_error_content(
+                        "tool_unavailable", error=f"{reason}: {name}", tool=name
+                    ),
                     ensure_ascii=False,
                 )
                 tool_messages.append(
@@ -440,12 +456,17 @@ def build_agent_graph(
                 result_error = str(exc)
             duration_ms = int((time.perf_counter() - started) * 1000)
 
-            content_obj = {
-                "status": status,
-                "ok": ok,
-                "output": output,
-                "error": result_error,
-            }
+            if ok:
+                content_obj = {
+                    "status": status,
+                    "ok": True,
+                    "output": output,
+                    "error": None,
+                }
+            else:
+                content_obj = tool_error_content(
+                    status, error=result_error, output=output, tool=name
+                )
             tool_messages.append(
                 {
                     "role": "tool",

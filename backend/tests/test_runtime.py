@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
@@ -379,7 +380,11 @@ async def test_rejected_tool_returns_to_model(checkpointer) -> None:
     last_call_messages = model.calls[-1]["messages"]
     tool_messages = [message for message in last_call_messages if message.role == "tool"]
     assert tool_messages
-    assert '"status": "rejected"' in tool_messages[-1].content
+    rejection = json.loads(tool_messages[-1].content)
+    assert rejection["status"] == "approval_rejected"
+    assert rejection["error_code"] == "approval_rejected"
+    assert rejection["retryable"] is False
+    assert rejection["hint"]
     assert "too risky" in tool_messages[-1].content
 
 

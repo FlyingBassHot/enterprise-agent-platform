@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from typing import Any
 
+import pytest
+
+from app.core.config import get_settings
 from app.core.contracts import ToolExecutionResult, ToolInvocation, UserContext
 from app.core.plan import PLAN_TOOL_NAME, normalize_plan
 from app.modules.runtime.service import RuntimeService
@@ -194,3 +198,162 @@ async def test_plan_survives_tool_rounds_and_is_reinjected(checkpointer) -> None
     # The injected plan is derived state, never persisted into the transcript.
     stored = [message.content for message in second_turn if message.role == "system"]
     assert any("Current Plan" in content for content in stored)
+
+
+async def test_compact_messages_summarizes_old_tool_results() -> None:
+    from app.modules.runtime.context import compact_messages
+
+    big = json.dumps(
+        {"status": "success", "ok": True, "output": {"payload": "x" * 5000}},
+        ensure_ascii=False,
+    )
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "name": "echo"}]},
+        {"role": "tool", "tool_call_id": "c1", "name": "echo", "content": big},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "name": "echo"}]},
+        {"role": "tool", "tool_call_id": "c2", "name": "echo", "content": big},
+    ]
+
+    compacted, saved = compact_messages(messages, budget_chars=2000, keep_recent=2)
+
+    assert saved > 0
+    summary = json.loads(compacted[3]["content"])
+    assert summary["compacted"] is True
+    assert summary["original_chars"] == len(big)
+    assert summary["output_keys"] == ["payload"]
+    assert compacted[5]["content"] == big
+    assert compacted[0]["content"] == "sys"
+    assert compacted[1]["content"] == "go"
+    # The persisted transcript is never mutated.
+    assert messages[3]["content"] == big
+
+
+async def test_compact_messages_is_a_noop_under_budget() -> None:
+    from app.modules.runtime.context import compact_messages
+
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "go"},
+    ]
+    compacted, saved = compact_messages(messages, budget_chars=100_000, keep_recent=1)
+    assert saved == 0
+    assert compacted == messages
+
+
+class BigOutputTools(FakeTools):
+    async def execute(
+        self, invocation: ToolInvocation, user: UserContext
+    ) -> ToolExecutionResult:
+        self.invocations.append(invocation)
+        return ToolExecutionResult(
+            ok=True,
+            status="success",
+            output={"payload": "x" * 3000},
+            duration_ms=1,
+        )
+
+
+class TimeoutTools(FakeTools):
+    async def execute(
+        self, invocation: ToolInvocation, user: UserContext
+    ) -> ToolExecutionResult:
+        self.invocations.append(invocation)
+        return ToolExecutionResult(
+            ok=False, status="timeout", error="upstream slow", duration_ms=5
+        )
+
+
+async def test_long_transcript_is_compacted_for_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+    checkpointer,  # noqa: F811 - pytest fixture
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "context_char_budget", 4000)
+    monkeypatch.setattr(settings, "context_keep_recent_messages", 2)
+
+    sink = FakeSink()
+    model = FakeModel(
+        [
+            {"tool_calls": [{"name": "echo", "arguments": {"n": 1}}]},
+            {"tool_calls": [{"name": "echo", "arguments": {"n": 2}}]},
+            {"tool_calls": [{"name": "echo", "arguments": {"n": 3}}]},
+            {"content": "done"},
+        ]
+    )
+    tools = BigOutputTools([make_tool("echo", "low")])
+    runtime = _runtime(model, tools, sink, checkpointer)
+
+    result = await runtime.run(
+        execution_id="exec-compaction",
+        snapshot=make_snapshot(tool_names=["echo"], max_iterations=6),
+        user=USER,
+        user_text="go",
+    )
+
+    assert result.status == "completed"
+    assert "context_compacted" in sink.types()
+
+    tool_messages = [message for message in model.calls[3]["messages"] if message.role == "tool"]
+    assert len(tool_messages) == 3
+    first = json.loads(tool_messages[0].content)
+    second = json.loads(tool_messages[1].content)
+    assert first["compacted"] is True
+    assert second["compacted"] is True
+    assert "payload" in json.loads(tool_messages[2].content)["output"]
+
+
+async def test_tool_timeout_reports_actionable_error(checkpointer) -> None:  # noqa: F811
+    sink = FakeSink()
+    model = FakeModel(
+        [
+            {"tool_calls": [{"name": "echo", "arguments": {}}]},
+            {"content": "ok"},
+        ]
+    )
+    tools = TimeoutTools([make_tool("echo", "low")])
+    runtime = _runtime(model, tools, sink, checkpointer)
+
+    result = await runtime.run(
+        execution_id="exec-timeout-guidance",
+        snapshot=make_snapshot(tool_names=["echo"]),
+        user=USER,
+        user_text="go",
+    )
+
+    assert result.status == "completed"
+    tool_message = next(
+        message for message in model.calls[1]["messages"] if message.role == "tool"
+    )
+    payload = json.loads(tool_message.content)
+    assert payload["error_code"] == "tool_timeout"
+    assert payload["retryable"] is True
+    assert payload["hint"]
+    assert payload["error"] == "upstream slow"
+
+
+async def test_unbound_tool_call_reports_unavailable(checkpointer) -> None:  # noqa: F811
+    sink = FakeSink()
+    model = FakeModel(
+        [
+            {"tool_calls": [{"name": "ghost", "arguments": {}}]},
+            {"content": "cannot do that"},
+        ]
+    )
+    runtime = _runtime(model, FakeTools(), sink, checkpointer)
+
+    result = await runtime.run(
+        execution_id="exec-unbound-tool",
+        snapshot=make_snapshot(tool_names=[]),
+        user=USER,
+        user_text="go",
+    )
+
+    assert result.status == "completed"
+    tool_message = next(
+        message for message in model.calls[1]["messages"] if message.role == "tool"
+    )
+    payload = json.loads(tool_message.content)
+    assert payload["error_code"] == "tool_unavailable"
+    assert payload["retryable"] is False

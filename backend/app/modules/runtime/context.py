@@ -6,6 +6,7 @@ execution module provides a database-backed implementation.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -228,6 +229,169 @@ def to_chat_messages(messages: Sequence[dict[str, Any]]) -> list[ChatMessage]:
             )
         )
     return result
+
+
+# --- context management -----------------------------------------------------
+
+# Older tool results are replaced by a deterministic summary once the transcript
+# outgrows the model's context budget. The summary keeps just enough for the
+# model to know what happened and to decide whether to call the tool again.
+COMPACTION_NOTE = (
+    "较早的工具结果已按上下文预算压缩；如需细节，请重新调用该工具。"
+)
+COMPACT_MIN_CHARS = 600
+ASSISTANT_KEEP_CHARS = 400
+ERROR_GUIDANCE: dict[str, tuple[str, str, bool]] = {
+    "approval_rejected": (
+        "approval_rejected",
+        "用户拒绝了本次工具调用；不要重试，先向用户确认下一步。",
+        False,
+    ),
+    "tool_unavailable": (
+        "tool_unavailable",
+        "该工具未绑定到当前 Agent 或已停用；改用其他工具或说明能力边界。",
+        False,
+    ),
+    "permission_denied": (
+        "permission_denied",
+        "权限不足，重试不会改变结果；说明缺少的权限或请用户授权。",
+        False,
+    ),
+    "tool_timeout": (
+        "tool_timeout",
+        "工具超时；缩小参数范围或数据量后重试一次，仍失败则说明限制。",
+        True,
+    ),
+    "tool_cancelled": ("tool_cancelled", "工具调用被取消；不要重试。", False),
+    "tool_failed": (
+        "tool_failed",
+        "工具执行失败；阅读错误信息，修正参数后再重试。",
+        True,
+    ),
+}
+
+
+ERROR_STATUS_ALIASES = {
+    "denied": "permission_denied",
+    "timeout": "tool_timeout",
+    "cancelled": "tool_cancelled",
+    "failed": "tool_failed",
+}
+
+
+def tool_error_details(status: str) -> tuple[str, str, bool]:
+    canonical = ERROR_STATUS_ALIASES.get(status, status)
+    return ERROR_GUIDANCE.get(canonical, ERROR_GUIDANCE["tool_failed"])
+
+
+def tool_error_content(
+    status: str,
+    *,
+    error: str | None,
+    output: Any = None,
+    tool: str | None = None,
+) -> dict[str, Any]:
+    """Structured failure payload the model can act on instead of guessing."""
+
+    code, hint, retryable = tool_error_details(status)
+    payload: dict[str, Any] = {
+        "status": status,
+        "ok": False,
+        "error_code": code,
+        "retryable": retryable,
+        "hint": hint,
+        "error": error,
+        "output": output,
+    }
+    if tool:
+        payload["tool"] = tool
+    return payload
+
+
+def _message_chars(message: dict[str, Any]) -> int:
+    total = len(str(message.get("content") or ""))
+    for call in message.get("tool_calls") or []:
+        total += len(json.dumps(call, ensure_ascii=False, default=str))
+    return total
+
+
+def _tool_summary(content: str) -> str:
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
+    summary: dict[str, Any] = {
+        "compacted": True,
+        "original_chars": len(content),
+        "digest": digest,
+        "note": COMPACTION_NOTE,
+    }
+    try:
+        data = json.loads(content)
+    except (TypeError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        for key in ("status", "ok", "error", "error_code", "retryable"):
+            if key in data:
+                summary[key] = data[key]
+        output = data.get("output")
+        if isinstance(output, dict):
+            summary["output_keys"] = sorted(str(key) for key in output)[:20]
+        elif isinstance(output, list):
+            summary["output_items"] = len(output)
+    return json.dumps(summary, ensure_ascii=False, default=str)
+
+
+def compact_messages(
+    messages: Sequence[dict[str, Any]],
+    *,
+    budget_chars: int,
+    keep_recent: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Shrink old observations without touching the persisted transcript.
+
+    Pass 1 summarizes old tool results (largest value, protocol-safe: tool
+    messages stay in place). Pass 2 trims old assistant prose if that is not
+    enough. User and system messages are never rewritten.
+    """
+
+    result = [dict(message) for message in messages]
+    total = sum(_message_chars(message) for message in result)
+    if budget_chars <= 0 or total <= budget_chars:
+        return result, 0
+
+    cutoff = max(0, len(result) - max(0, keep_recent))
+    saved = 0
+
+    for index in range(cutoff):
+        if total <= budget_chars:
+            break
+        message = result[index]
+        if message.get("role") != "tool":
+            continue
+        content = str(message.get("content") or "")
+        if len(content) <= COMPACT_MIN_CHARS:
+            continue
+        summary = _tool_summary(content)
+        saved += len(content) - len(summary)
+        total -= len(content) - len(summary)
+        message["content"] = summary
+
+    for index in range(cutoff):
+        if total <= budget_chars:
+            break
+        message = result[index]
+        if message.get("role") != "assistant":
+            continue
+        content = str(message.get("content") or "")
+        if len(content) <= COMPACT_MIN_CHARS:
+            continue
+        trimmed = (
+            content[:ASSISTANT_KEEP_CHARS]
+            + f"\n…[compacted {len(content) - ASSISTANT_KEEP_CHARS} chars]"
+        )
+        saved += len(content) - len(trimmed)
+        total -= len(content) - len(trimmed)
+        message["content"] = trimmed
+
+    return result, saved
 
 
 def truncate_tool_output(output: Any) -> str:
