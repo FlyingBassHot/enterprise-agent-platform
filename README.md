@@ -56,7 +56,7 @@ Agent 执行链路：
 | MCP | stdio / Streamable HTTP Server、工具发现与同步、管理员权限、调用超时 |
 | Workflow | 版本化 JSON 定义、Start/LLM/Agent/Tool/Knowledge/Condition/Approval/End、LangGraph 执行、审批/恢复/重试、Agent `workflow`/`hybrid` 模式 |
 | Governance | RBAC + ABAC 策略、操作员/审批人角色、审批分离、HTTP 审计日志、登录限流、用户存储配额、SQLite+文件备份/恢复 |
-| Runtime | LangGraph 状态图、流式输出、Tool Calling、计划状态、上下文压缩、结构化工具错误、完成校验、环境声明、统一策略决策、RAG 引用、Skill 注入、工具绑定校验 |
+| Runtime | LangGraph 状态图、流式输出、Tool Calling、计划状态、上下文压缩、结构化工具错误、无进展检测、工具幂等重放、完成校验、环境声明、统一策略决策、RAG 引用、Skill 注入、工具绑定校验 |
 | Execution | execution_id、状态机（含 `incomplete` 未完成态）、事件序号、SSE 断线重连、取消、失败恢复、预算追加续跑 |
 | Task | 任务实体（目标/约束/成功标准）、计划步骤持久化、跨执行续跑（`task_id`） |
 | Approval | 高风险工具人工审批、拒绝回传、批准后恢复、禁止非管理员自批 |
@@ -156,6 +156,8 @@ APP_HTTP_TOOL_MAX_RESPONSE_KB=256   # 单次响应截断上限，默认 256 KB
 - **上下文预算**：`APP_CONTEXT_CHAR_BUDGET`（默认 60000 字符）是模型上下文的字符替代指标。超出后，较早的工具结果被替换为确定性摘要（保留 status / error_code / output 键名 / 原文 digest / 原始长度），最近 `APP_CONTEXT_KEEP_RECENT_MESSAGES`（默认 6）条消息保持原样；再不够才压缩较早的 assistant 文本。压缩只作用于本轮发给模型的投影，持久化的会话历史不变，并发出 `context_compacted` 事件。
 - **工具错误语义**：失败的 tool 消息携带 `error_code`（`tool_timeout` / `permission_denied` / `tool_unavailable` / `approval_rejected` / `tool_failed` / `tool_cancelled`）、`retryable` 与 `hint`，模型据此决定修正参数重试还是如实报告限制，而不是重复盲试。
 - **环境声明**：运行开始前打开 `ArtifactWorkspace`，把本次可用的附件（会话附件 + 显式附带）以资源清单写入 system prompt（只读、单资源 `APP_ENVIRONMENT_MAX_RESOURCE_BYTES` 上限），并发出 `environment_opened`。`platform_read_artifact` 在运行中只接受该清单内的资源；工作区之外的 artifact 即使属于同一用户也会被拒绝。执行暂停等待审批时环境保持打开，终态时关闭。
+- **无进展检测**：同一工具 + 同一参数 + 相同结果的调用最多执行两次；第三次直接拒绝（`repeated_call`，不可重试）并以 `stop_reason=no_progress` 收尾，避免"重试同一个错误"和"完成后继续空转"消耗预算。
+- **工具幂等重放**：`tool_executions` 以 `(execution_id, tool_call_id)` 唯一标识一次调用；重放同一调用直接返回已记录的成功结果（`replayed=true`），不重复副作用。
 - **策略决策**：工具访问、审批要求、资源授权统一由 `app/core/policy.py` 的纯函数判定（`allow` / `require_approval` / `deny` + `code` + `reason`）。运行时、ToolService、Workflow 节点与 `PermissionService` 共用同一结论；审批与拒绝事件都带 `policy`，Agent 配置只能加严、不能降低平台风险下限。
 - **完成校验**：模型输出纯文本后进入 `verify` 相位，由 `TaskVerifier` 做确定性检查（空答案、计划未完成、可选引用检查）。不通过时注入 `[系统校验]` 反馈回退一轮（`execution.verification.max_retries`，默认 1，上限 2）；重试耗尽则保留答案、执行判 `incomplete`，并在 `output_payload.verification` 写入 issues。校验通过会把已 `done` 的步骤标记 `verified`。可用 `execution.verification.enabled=false` 关闭。
 
@@ -261,7 +263,7 @@ npx vue-tsc --noEmit -p tsconfig.app.json
 npm run build
 ```
 
-当前结果：**218 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
+当前结果：**225 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
 
 ---
 
@@ -290,6 +292,7 @@ npm run build
 - Knowledge 默认本地 Hash Embedding + SQLite 向量扫描；pgvector/Qdrant 适配器尚未实现。
 - MCP 仅支持 stdio / Streamable HTTP，管理员配置；未实现 OAuth 交互式授权。
 - 限流为单进程内存实现，多 Worker/多实例需替换 Redis 限流；Knowledge 文档存储未计入用户配额。
+- SQLite 为单写者：创建后立即取消执行时，取消写入可能与 worker 启动写入竞争并等待 busy timeout（30s）。生产应使用 PostgreSQL。
 - ABAC 已支持按主体角色/部门/租户与资源 ID 匹配的 allow/deny 策略，deny 优先于 owner/grant；复杂条件表达式与属性来源扩展尚未实现。
 - 出站白名单仅覆盖内置 `platform_http_request`；管理员登记的 HTTP Tool 与 MCP HTTP 尚无域名/IP allowlist。内置工具存在 DNS rebinding 时间窗。
 - 当前为单进程内文档处理与执行 Runner；生产建议拆 Worker。

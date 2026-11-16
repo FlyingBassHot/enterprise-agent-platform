@@ -46,6 +46,10 @@ class AgentState(TypedDict, total=False):
     verification_status: str | None
     verification_issues: list[dict[str, Any]]
     verification_attempts: int
+    # No-progress detection: identical tool call + identical result, repeated.
+    last_tool_signature: str | None
+    last_tool_digest: str | None
+    repeat_streak: int
 
 
 @dataclass(slots=True)

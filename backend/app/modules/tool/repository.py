@@ -66,6 +66,16 @@ class ToolRepository:
             grouped.setdefault(row.tool_id, []).append(row)
         return grouped
 
+    async def get_execution_by_call(
+        self, execution_id: str, tool_call_id: str
+    ) -> ToolExecution | None:
+        return await self.db.scalar(
+            select(ToolExecution).where(
+                ToolExecution.execution_id == execution_id,
+                ToolExecution.tool_call_id == tool_call_id,
+            )
+        )
+
     def record_execution(self, execution: ToolExecution) -> None:
         self.db.add(execution)
 

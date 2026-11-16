@@ -323,15 +323,22 @@ class ExecutionService:
             agent_version = 0
             mode = "workflow"
 
+        tasks = TaskService(self.db)
+        task = None
+        if payload.task_id:
+            task = await tasks.resolve_for_execution(
+                actor, payload.task_id, payload.conversation_id
+            )
+            if not payload.conversation_id and task.conversation_id:
+                # Continuing a task stays in its conversation unless the caller
+                # explicitly names another one.
+                payload = payload.model_copy(
+                    update={"conversation_id": task.conversation_id}
+                )
         conversation = await self._resolve_conversation(
             actor, conversation_agent_id, conversation_title, payload
         )
-        tasks = TaskService(self.db)
-        if payload.task_id:
-            task = await tasks.resolve_for_execution(
-                actor, payload.task_id, conversation.id
-            )
-        else:
+        if task is None:
             task = await tasks.ensure_task(
                 agent_id=agent_id or conversation_agent_id,
                 user_id=actor.user_id,
@@ -860,10 +867,14 @@ class ExecutionService:
                         )
             await self._apply_result(execution_id, result, sink)
         except asyncio.CancelledError:
+            # Release this worker's transaction before another session writes
+            # the terminal status; otherwise SQLite cancels wait on the lock.
+            await self.db.rollback()
             await self._ensure_cancelled(execution_id)
             raise
         except Exception as exc:  # noqa: BLE001 - any crash marks the execution failed
             logger.exception("execution crashed", extra={"execution_id": execution_id})
+            await self.db.rollback()
             await self._ensure_failed(execution_id, str(exc), sink)
 
     async def _gateways(

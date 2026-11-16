@@ -109,9 +109,10 @@ START → agent(decide) ──有 tool_calls──→ tools(act) → agent …
 
 1. 存在 `__interrupt__` → `waiting_approval`
 2. `state.error` → `failed`
-3. `stop_reason ∈ {max_iterations, verification_failed}` 且有 `final_output` → **`incomplete`**
-4. `final_output is None` → `failed`（"finished without producing an answer"）
-5. 否则 → `completed`
+3. `stop_reason == no_progress` 且无 `final_output` → `failed`（`no_progress`）
+4. `stop_reason ∈ {max_iterations, verification_failed, no_progress}` 且有文本 → **`incomplete`**
+5. `final_output is None` → `failed`（"finished without producing an answer"）
+6. 否则 → `completed`
 
 **不变量 I2（补充）**：验证未通过且重试耗尽时，答案保留、执行判 `incomplete`；
 Verifier 永远不能把执行直接判为 `completed` 或 `failed`。
@@ -131,11 +132,17 @@ Verifier 永远不能把执行直接判为 `completed` 或 `failed`。
 
 **不变量 I3**：预算耗尽必须保留 `usage`、`steps`、`plan` 与部分答案，且事件为 `execution_incomplete`。
 
-下一版（S4 一并做）：
+**无进展检测（已实现）**：同一工具 + 同一参数 + 相同结果的调用允许执行两次；
+第三次相同调用不再执行，回 `repeated_call`（不可重试），并发 `no_progress_detected`，
+执行以 `stop_reason=no_progress` 收尾。用于挡住"重试同一个错误"和"完成后继续空转"。
+
+**工具幂等重放（已实现）**：`tool_executions` 记录 `(execution_id, tool_call_id)` 唯一键；
+重放同一调用（同工具、同脱敏参数）直接返回已记录的成功结果，`replayed=true`，不再触发副作用。
+
+下一版：
 
 - 主预算改为累计 `usage.total_tokens`，轮次降为硬保险；
 - 每轮把"剩余预算"注入上下文（与 plan 同一通道），让模型主动收尾；
-- 无进展检测：连续两轮同工具同参数且结果 digest 相同 → `stop_reason="no_progress"`；
 - 跨 resume 累计墙钟。
 
 ---
@@ -174,6 +181,8 @@ Environment 回答"这次运行在什么环境里工作"，Tool 回答"能做什
 
 **不变量 I11**：Agent 配置只能增加审批要求，不能降低平台风险下限。
 **不变量 I12**：策略拒绝不执行工具、不产生副作用，并以结构化 `error_code` 回给模型。
+**不变量 I13**：同一工具 + 同参数 + 同结果只允许执行两次；第三次不执行，以 `no_progress` 收尾。
+**不变量 I14**：同一 `(execution_id, tool_call_id)` 的成功结果只产生一次副作用，重放返回记录值。
 
 ## 8. 观察与错误契约
 
@@ -292,19 +301,19 @@ Verifier 通过 `VerifierGateway` 注入，runtime 不 import 领域模块；实
 
 ---
 
-## 13. 故障分支矩阵（Benchmark 候选）
+## 13. 故障分支矩阵（Benchmark，已由 `tests/test_fault_scenarios.py` 覆盖）
 
 | 场景 | 当前行为 | 缺口 |
 |---|---|---|
-| 工具连续失败 3 次 | 每轮结构化错误 + hint，模型可换策略 | 无"同一错误重复 N 次即止损" |
-| 模型返回非法参数 | schema 校验失败 → `tool_failed` | 无参数修复建议（可由工具提供 examples） |
-| 执行中进程重启 | 启动时 stale → `failed(recoverable)`；resume 从 checkpoint 续 | 崩溃在工具执行中途的幂等性未验证 |
-| 用户中途改目标 | 只能取消后新建执行 | 无 steering（运行中注入用户消息） |
-| 工具成功但结果丢失 | 无处理 | 需要工具侧幂等键（`ToolContext` 已有位置） |
-| 上下文达上限 | 压缩旧工具输出与旧 assistant 文本 | 压缩后仍可能超窗，无硬失败保护 |
+| 工具连续失败 3 次 | 前两次记录结构化错误；第三次相同调用被拒（`repeated_call`）→ `no_progress` 收尾 | 无跨工具聚类的失败分析 |
+| 模型返回非法参数 | schema 校验失败 → `tool_failed`，handler 不执行 | 无参数修复建议（可由工具提供 examples） |
+| 执行中进程重启 | stale → `failed(recoverable)`；resume 从 checkpoint 续；同一 `tool_call_id` 重放不重复副作用 | 崩溃窗口的端到端演练仍缺 |
+| 用户中途改目标 | 取消 + 同一 Task 上新执行继续（对话与计划保留） | 无运行中 steering |
+| 工具成功但结果丢失 | 重放同一 `tool_call_id` 返回已记录结果（`replayed=true`） | 记录写入前崩溃仍可能重复副作用（窗口已缩小） |
+| 上下文达上限 | 旧工具输出摘要化、旧 assistant 文本截断；提示长度有界 | 压缩后仍可能超窗，无硬失败保护 |
 | 访问未授权资源 | 策略判定 `deny`（`permission_denied`），不可重试、无副作用 | 原因已进事件，尚无独立策略审计流 |
 | 模型提前宣称完成 | 终检失败 → 回退一次 → 仍失败则 `incomplete` | Level 3 目标级判断仍靠人工 |
-| 任务已完成但模型继续调用工具 | 继续执行直到预算 | 无"完成即停机"优化（可接受） |
+| 任务已完成但模型继续调用工具 | 相同调用第三次被拒 → `no_progress` | 无"完成即停机"优化（可接受） |
 
 ---
 
@@ -325,3 +334,4 @@ Verifier 通过 `VerifierGateway` 注入，runtime 不 import 领域模块；实
 | 2026-11-16 | 新增 `verify` 相位与 `VerifierGateway`：确定性终检、回退一次、耗尽判 `incomplete` |
 | 2026-11-16 | 新增 `EnvironmentGateway` 与 `ArtifactWorkspace`：环境声明、只读范围、生命周期事件 |
 | 2026-11-16 | 策略收敛到 `app/core/policy.py`：工具访问/审批/资源授权共用 `PolicyDecision`，事件携带原因 |
+| 2026-11-16 | 新增无进展检测与工具幂等重放；取消/崩溃路径先回滚事务再写终态，消除 SQLite 写锁等待 |

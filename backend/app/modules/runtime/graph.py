@@ -8,6 +8,7 @@ runs (including approval interrupts).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from typing import TYPE_CHECKING, Any
@@ -44,6 +45,16 @@ from app.modules.runtime.context import (
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
+
+
+def _tool_signature(name: str, arguments: Any) -> str:
+    payload = json.dumps(arguments or {}, sort_keys=True, ensure_ascii=False, default=str)
+    return f"{name}:{hashlib.sha1(payload.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _result_digest(payload: Any) -> str:
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
 
 def _normalize_decision(raw: Any) -> dict[str, Any]:
@@ -275,6 +286,10 @@ def build_agent_graph(
         descriptor_map: dict[str, Any] = {}
         plan = list(state.get("plan") or [])
         plan_changed = False
+        last_signature = state.get("last_tool_signature")
+        last_digest = state.get("last_tool_digest")
+        repeat_streak = int(state.get("repeat_streak") or 0)
+        no_progress = False
         if pending:
             pending_names = {str(call.get("name")) for call in pending}
             stored = state.get("tool_descriptors") or []
@@ -308,6 +323,14 @@ def build_agent_graph(
                     "approved": False,
                     "comment": policy.reason,
                     "policy": policy,
+                }
+                continue
+            signature = _tool_signature(name, call.get("arguments") or {})
+            if signature == last_signature and repeat_streak >= 2:
+                decisions[call_id] = {
+                    "approved": False,
+                    "comment": "identical tool call repeated without new information",
+                    "repeated": True,
                 }
                 continue
             if policy.effect is not PolicyEffect.REQUIRE_APPROVAL:
@@ -400,6 +423,49 @@ def build_agent_graph(
                         "ok": False,
                         "error": policy.reason,
                         "error_code": policy.code,
+                    },
+                )
+                continue
+
+            if decision.get("repeated"):
+                no_progress = True
+                content = json.dumps(
+                    tool_error_content(
+                        "failed",
+                        error="相同工具调用已连续执行且结果一致，停止重复。",
+                        tool=name,
+                        code="repeated_call",
+                        hint="不要再次提交相同调用；更换参数、换工具，或说明无法继续。",
+                        retryable=False,
+                    ),
+                    ensure_ascii=False,
+                )
+                tool_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "name": name,
+                        "content": content,
+                    }
+                )
+                await sink.emit(
+                    "no_progress_detected",
+                    {
+                        "tool_call_id": call_id,
+                        "tool_name": name,
+                        "signature": _tool_signature(name, arguments),
+                        "streak": repeat_streak,
+                    },
+                )
+                await sink.emit(
+                    "tool_call_completed",
+                    {
+                        "tool_call_id": call_id,
+                        "tool_name": name,
+                        "status": "denied",
+                        "ok": False,
+                        "error": "repeated_call",
+                        "error_code": "repeated_call",
                     },
                 )
                 continue
@@ -510,6 +576,13 @@ def build_agent_graph(
                 content_obj = tool_error_content(
                     status, error=result_error, output=output, tool=name
                 )
+            signature = _tool_signature(name, arguments)
+            digest = _result_digest(content_obj)
+            if signature == last_signature and digest == last_digest:
+                repeat_streak += 1
+            else:
+                repeat_streak = 1
+            last_signature, last_digest = signature, digest
             tool_messages.append(
                 {
                     "role": "tool",
@@ -546,9 +619,14 @@ def build_agent_graph(
             "messages": messages + tool_messages,
             "pending_tool_calls": [],
             "error": None,
+            "last_tool_signature": last_signature,
+            "last_tool_digest": last_digest,
+            "repeat_streak": repeat_streak,
         }
         if plan_changed:
             update["plan"] = plan
+        if no_progress:
+            update["stop_reason"] = "no_progress"
         return update
 
     async def verify_node(state: AgentState) -> dict[str, Any]:
@@ -636,6 +714,8 @@ def build_agent_graph(
 
     def route_after_tools(state: AgentState) -> str:
         if state.get("error"):
+            return END
+        if state.get("stop_reason") == "no_progress":
             return END
         return "agent"
 

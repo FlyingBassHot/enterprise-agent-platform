@@ -271,6 +271,7 @@ class ToolExecutionResult(BaseModel):
     error: str | None = None
     duration_ms: int = 0
     masked_arguments: dict[str, Any] = Field(default_factory=dict)
+    replayed: bool = False
 
 
 class ToolGateway(Protocol):

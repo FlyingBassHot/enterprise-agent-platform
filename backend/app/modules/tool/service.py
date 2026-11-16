@@ -346,6 +346,7 @@ class ToolService(ToolGateway):
             execution_id=invocation.execution_id,
             agent_id=invocation.agent_id,
             approved=invocation.approved,
+            tool_call_id=invocation.tool_call_id,
         )
 
     async def list_execution_records(self, execution_id: str) -> list[ToolExecutionOut]:
@@ -390,9 +391,30 @@ class ToolService(ToolGateway):
         agent_id: str | None = None,
         approved: bool = False,
         enforce_scope: bool = True,
+        tool_call_id: str | None = None,
     ) -> ToolExecutionResult:
         started = time.perf_counter()
         masked = mask_arguments(arguments, tool.sensitive_fields or [])
+
+        if execution_id and tool_call_id:
+            # A retried step must not repeat a side effect. Replay the recorded
+            # successful result instead of invoking the handler again.
+            replayed = await self.repo.get_execution_by_call(execution_id, tool_call_id)
+            if (
+                replayed is not None
+                and replayed.status == ToolExecutionStatus.SUCCESS.value
+                and replayed.tool_name == tool.name
+                and dict(replayed.arguments_masked or {}) == masked
+            ):
+                return ToolExecutionResult(
+                    ok=True,
+                    status=ToolExecutionStatus.SUCCESS.value,
+                    output=replayed.result,
+                    error=None,
+                    duration_ms=0,
+                    masked_arguments=masked,
+                    replayed=True,
+                )
 
         if enforce_scope:
             grants = await self.repo.grants_for_tool(tool.id)
@@ -408,6 +430,7 @@ class ToolService(ToolGateway):
                     access.code,
                     None,
                     started,
+                    tool_call_id=tool_call_id,
                 )
 
         approval = decide_tool_call(
@@ -424,6 +447,7 @@ class ToolService(ToolGateway):
                 "approval_required",
                 None,
                 started,
+                tool_call_id=tool_call_id,
             )
 
         validation_error = self._validate_arguments(tool, arguments)
@@ -438,6 +462,7 @@ class ToolService(ToolGateway):
                 self._scrub(validation_error, arguments, tool.sensitive_fields or []),
                 None,
                 started,
+                tool_call_id=tool_call_id,
             )
 
         timeout_seconds = self._timeout(tool)
@@ -462,6 +487,7 @@ class ToolService(ToolGateway):
                 error,
                 None,
                 started,
+                tool_call_id=tool_call_id,
             )
         except asyncio.CancelledError:
             await self._finish(
@@ -474,6 +500,7 @@ class ToolService(ToolGateway):
                 "cancelled",
                 None,
                 started,
+                tool_call_id=tool_call_id,
             )
             raise
         except Exception as exc:  # noqa: BLE001 - tool failures become recorded results
@@ -489,6 +516,7 @@ class ToolService(ToolGateway):
                 ),
                 None,
                 started,
+                tool_call_id=tool_call_id,
             )
 
         return await self._finish(
@@ -501,6 +529,7 @@ class ToolService(ToolGateway):
             None,
             json_safe(output),
             started,
+            tool_call_id=tool_call_id,
         )
 
     async def _invoke(
@@ -563,6 +592,7 @@ class ToolService(ToolGateway):
         error: str | None,
         output: Any,
         started: float,
+        tool_call_id: str | None = None,
     ) -> ToolExecutionResult:
         duration_ms = max(0, int((time.perf_counter() - started) * 1000))
         self.repo.record_execution(
@@ -570,6 +600,7 @@ class ToolService(ToolGateway):
                 tool_id=tool.id,
                 tool_name=tool.name,
                 execution_id=execution_id,
+                tool_call_id=tool_call_id,
                 user_id=user.user_id,
                 agent_id=agent_id,
                 arguments_masked=masked,

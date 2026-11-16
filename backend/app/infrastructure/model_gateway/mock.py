@@ -40,13 +40,14 @@ class MockModelProvider(BaseModelProvider):
         return None
 
     def _compose(self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]) -> ChatMessage:
+        turn = sum(1 for message in messages if message.role == "assistant")
         step = self._script_step(messages)
         if step is not None:
             calls = []
             for raw in step.get("tool_calls", []) or []:
                 calls.append(
                     ToolCall(
-                        id=raw.get("id") or f"call_mock_{len(calls)}",
+                        id=raw.get("id") or f"call_mock_{turn}_{len(calls)}",
                         name=raw["name"],
                         arguments=raw.get("arguments") or {},
                     )

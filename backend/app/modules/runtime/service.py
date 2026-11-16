@@ -234,6 +234,9 @@ class RuntimeService:
             "verification_issues": [],
             "verification_attempts": 0,
             "environment": environment.model_dump() if environment else None,
+            "last_tool_signature": None,
+            "last_tool_digest": None,
+            "repeat_streak": 0,
             "usage": {},
             "knowledge_citations": [
                 {
@@ -392,7 +395,11 @@ class RuntimeService:
         }
         if stop_reason:
             output_payload["stop_reason"] = stop_reason
-            output_payload["partial"] = stop_reason == "max_iterations"
+            output_payload["partial"] = stop_reason in {
+                "max_iterations",
+                "verification_failed",
+                "no_progress",
+            }
         if interrupts:
             approval_ids: list[str] = []
             interrupt_map: dict[str, str] = {}
@@ -427,6 +434,14 @@ class RuntimeService:
                 error=str(error),
             )
         final_output = state.get("final_output")
+        if stop_reason == "no_progress" and final_output is None:
+            return RuntimeResult(
+                status="failed",
+                output_text=None,
+                output_payload=output_payload,
+                usage=usage,
+                error="no_progress: identical tool call repeated without new information",
+            )
         if stop_reason in {"max_iterations", "verification_failed"} and final_output is not None:
             return RuntimeResult(
                 status="incomplete",

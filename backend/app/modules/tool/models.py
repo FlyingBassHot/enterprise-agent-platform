@@ -96,12 +96,16 @@ class ToolPermission(UUIDMixin, Base):
 
 class ToolExecution(UUIDMixin, Base):
     __tablename__ = "tool_executions"
+    __table_args__ = (
+        UniqueConstraint("execution_id", "tool_call_id", name="uq_tool_execution_call"),
+    )
 
     tool_id: Mapped[str | None] = mapped_column(
         ForeignKey("tools.id", ondelete="SET NULL"), index=True, nullable=True
     )
     tool_name: Mapped[str] = mapped_column(String(120), index=True, nullable=False)
     execution_id: Mapped[str | None] = mapped_column(String(36), index=True, nullable=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     agent_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     arguments_masked: Mapped[dict] = mapped_column(default=dict, nullable=False)
