@@ -50,7 +50,7 @@ Agent 执行链路：
 | 模型管理 | Provider / Model Config、健康检查、API Key 加密与掩码、Mock + OpenAI 兼容 |
 | Prompt | 模板版本、变量 Schema、渲染校验、预览、发布 |
 | Agent | CRUD、草稿/发布/停用、版本快照、发布前校验、工具版本固定 |
-| Tool Registry | Native / HTTP / MCP 工具、JSON Schema 校验、权限范围、风险等级、超时、脱敏、执行记录 |
+| Tool Registry | Native / HTTP / MCP 工具、JSON Schema 校验、权限范围、风险等级、超时、脱敏、执行记录；内置 `platform_current_time` / `platform_read_artifact` / `platform_http_request` |
 | Knowledge | 知识库/文档权限、PDF/DOCX/XLSX/TXT/MD/CSV 解析、切片、本地 Hash Embedding、混合检索、引用注入 |
 | Skill | 文件系统 SKILL.md、版本/依赖、启停、Agent 绑定、运行时指令注入 |
 | MCP | stdio / Streamable HTTP Server、工具发现与同步、管理员权限、调用超时 |
@@ -85,7 +85,7 @@ docker compose up -d --build
 docker compose exec backend cat /data/initial_admin_password.txt
 ```
 
-打开 <http://localhost:8080>，使用 `admin` + 上述密码登录。审计演示 Agent、审计规则知识库、Audit Skill、审计工作流与样例数据会自动 seed。
+打开 <http://localhost:8080>，使用 `admin` + 上述密码登录。审计演示 Agent、审计规则知识库、Audit Skill、审计工作流与样例数据会自动 seed；同时会 seed 内置通用助手 `general-assistant`（绑定平台基础工具），用于验证平台基础能力。
 
 如 8080 端口已被占用，在项目根目录 `.env` 中设置 `FRONTEND_PORT=8081`，再启动并访问 <http://localhost:8081>。
 
@@ -124,6 +124,25 @@ make test        # 后端测试
 make build       # 前端生产构建
 ```
 
+### 内置基础工具
+
+平台自带三个原生工具，启动时自动注册并 `sync` 为可绑定的 Tool 记录，任何 Agent 都可以直接绑定：
+
+| 工具 | 风险 | 说明 |
+|---|---|---|
+| `platform_current_time` | low | 返回当前时间、日期、星期、时区偏移与时间戳，支持 IANA 时区 |
+| `platform_read_artifact` | low | 读取当前用户有权访问的上传附件；文本类附件返回正文摘录，二进制附件只返回元数据 |
+| `platform_http_request` | medium | 向管理员白名单内的服务发起 GET/POST；白名单为空时禁止出网，内网/保留地址一律拒绝，不自动跟随重定向 |
+
+出网白名单通过环境变量配置（逗号分隔，精确主机名或以 `.` 开头的后缀）：
+
+```bash
+APP_HTTP_TOOL_ALLOWED_HOSTS=api.example.com,.internal.example.com
+APP_HTTP_TOOL_MAX_RESPONSE_KB=256   # 单次响应截断上限，默认 256 KB
+```
+
+白名单只作用于内置 `platform_http_request`；管理员在「工具管理」中手工登记的 HTTP Tool 仍按各工具自身配置出站。DNS 解析与 HTTP 客户端各解析一次，存在 DNS rebinding 时间窗，因此白名单应只包含自有或可信主机。
+
 ### 切换到真实模型
 
 在「模型管理」中新建 `openai_compatible` Provider（如 vLLM / LiteLLM 的 `/v1` 地址），再创建模型配置并绑定到 Agent。密钥加密存储，接口只返回掩码。
@@ -156,7 +175,7 @@ backend/
 │   │   ├── skill/              # Skill 扫描 / 版本 / 启停 / 运行时注入
 │   │   ├── workflow/           # Workflow 定义 / 版本 / 校验 / LangGraph 执行器
 │   │   ├── audit_log/          # 追加式 HTTP 审计日志
-│   │   ├── tool/               # Tool Registry / Executor / HTTP / MCP 适配
+│   │   ├── tool/               # Tool Registry / Executor / HTTP / MCP；builtin/ 为平台基础工具
 │   │   ├── runtime/            # LangGraph 适配层 / Checkpointer / RAG 上下文
 │   │   └── execution/          # 执行 / 会话 / 事件 / 审批 / 附件
 │   └── domain_plugins/audit/   # 审计领域包（工具 / Prompt / 样例 / 报告）
@@ -226,7 +245,7 @@ npx vue-tsc --noEmit -p tsconfig.app.json
 npm run build
 ```
 
-当前结果：**167 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
+当前结果：**181 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
 
 ---
 
@@ -256,7 +275,7 @@ npm run build
 - MCP 仅支持 stdio / Streamable HTTP，管理员配置；未实现 OAuth 交互式授权。
 - 限流为单进程内存实现，多 Worker/多实例需替换 Redis 限流；Knowledge 文档存储未计入用户配额。
 - ABAC 已支持按主体角色/部门/租户与资源 ID 匹配的 allow/deny 策略，deny 优先于 owner/grant；复杂条件表达式与属性来源扩展尚未实现。
-- HTTP Tool / MCP HTTP 尚无出站域名/IP allowlist。
+- 出站白名单仅覆盖内置 `platform_http_request`；管理员登记的 HTTP Tool 与 MCP HTTP 尚无域名/IP allowlist。内置工具存在 DNS rebinding 时间窗。
 - 当前为单进程内文档处理与执行 Runner；生产建议拆 Worker。
 - Embedding 默认离线 Hash 模型，语义质量有限；生产建议切换到真实 Embedding Provider。
 - 模型 Provider 配置尚未按 Agent 快照固定；生产建议由管理员统一管理并审计变更。

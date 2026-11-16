@@ -53,7 +53,9 @@ def _agent_config(
     knowledge_base_ids: list[str] | None = None,
     skill_names: list[str] | None = None,
 ) -> dict[str, Any]:
-    return {
+    from app.modules.agent.schemas import AgentConfig
+
+    raw = {
         "model": {
             "config_id": model_config_id,
             "temperature": 0.2,
@@ -88,6 +90,9 @@ def _agent_config(
             "labels_file": "seed/audit_labels.json",
         },
     }
+    # Normalize through the schema so the idempotency check compares the same
+    # shape the API stores (defaults such as execution.workflow_id included).
+    return AgentConfig.model_validate(raw).model_dump(mode="json")
 
 
 def _config_matches(stored: Any, expected: dict[str, Any]) -> bool:

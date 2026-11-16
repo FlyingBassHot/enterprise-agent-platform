@@ -16,6 +16,7 @@ from app.infrastructure.database.session import check_database, get_session_fact
 from app.modules.execution.service import ExecutionService
 from app.modules.permission.service import PermissionService
 from app.modules.runtime.checkpoint import close_checkpointer
+from app.modules.tool.builtin import register as register_builtin_tools
 from app.modules.tool.service import ToolService
 
 configure_logging()
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI):
     async with get_session_factory()() as db:
         service = PermissionService(db)
         await service.ensure_seed()
+        register_builtin_tools()
         register_audit_plugin()
         await ToolService(db).sync_native()
         if settings.bootstrap_admin_username and settings.bootstrap_admin_password:

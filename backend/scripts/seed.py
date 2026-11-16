@@ -23,6 +23,7 @@ from app.domain_plugins.audit import register as register_audit  # noqa: E402
 from app.domain_plugins.audit.seed import seed_audit_demo  # noqa: E402
 from app.infrastructure.database.registry import *  # noqa: E402,F401,F403
 from app.infrastructure.database.session import get_session_factory, init_db  # noqa: E402
+from app.modules.agent.seed import seed_general_assistant  # noqa: E402
 from app.modules.agent.service import AgentService  # noqa: E402
 from app.modules.knowledge.service import KnowledgeService  # noqa: E402
 from app.modules.model.schemas import (  # noqa: E402
@@ -35,6 +36,7 @@ from app.modules.model.service import ModelService  # noqa: E402
 from app.modules.permission.service import PermissionService  # noqa: E402
 from app.modules.prompt.service import PromptService  # noqa: E402
 from app.modules.skill.service import SkillService  # noqa: E402
+from app.modules.tool.builtin import register as register_builtin_tools  # noqa: E402
 from app.modules.tool.service import ToolService  # noqa: E402
 from app.modules.workflow.service import WorkflowService  # noqa: E402
 
@@ -122,10 +124,18 @@ async def main() -> None:
         models = ModelService(db)
         model_config_id = await ensure_mock_model(models)
 
+        register_builtin_tools()
         register_audit()
         tools = ToolService(db)
         synced = await tools.sync_native()
 
+        general_agent = await seed_general_assistant(
+            AgentService(db),
+            PromptService(db),
+            tools,
+            actor,
+            model_config_id=model_config_id,
+        )
         result = await seed_audit_demo(
             AgentService(db),
             PromptService(db),
@@ -143,6 +153,7 @@ async def main() -> None:
         "admin_password_file": str(password_file) if password_file else None,
         "model_config_id": model_config_id,
         "native_tools_synced": synced,
+        "general_agent": general_agent,
         **result,
         "next": "uv run uvicorn app.main:app --reload --port 8000",
     }

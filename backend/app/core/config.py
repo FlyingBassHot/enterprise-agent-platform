@@ -38,6 +38,11 @@ class Settings(BaseSettings):
         "http://localhost:8080",
     ]
 
+    # Outbound egress for the platform_http_request tool. Empty means disabled.
+    # Exact host names, or a leading-dot suffix such as ".example.com".
+    http_tool_allowed_hosts: Annotated[list[str], NoDecode] = []
+    http_tool_max_response_kb: int = 256
+
     bootstrap_admin_username: str | None = None
     bootstrap_admin_password: str | None = None
     bootstrap_token: str | None = None
@@ -77,9 +82,9 @@ class Settings(BaseSettings):
     llm_api_key: str = "not-needed"
     llm_model: str = "local-model"
 
-    @field_validator("cors_origins", mode="before")
+    @field_validator("cors_origins", "http_tool_allowed_hosts", mode="before")
     @classmethod
-    def _split_origins(cls, value: object) -> object:
+    def _split_csv(cls, value: object) -> object:
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value

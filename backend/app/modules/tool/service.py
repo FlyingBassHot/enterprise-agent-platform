@@ -27,6 +27,7 @@ from app.core.exceptions import (
     PermissionDeniedError,
     ValidationError,
 )
+from app.core.logging import get_logger
 from app.modules.tool.adapters.http import execute_http_tool
 from app.modules.tool.exceptions import (
     ToolDefinitionError,
@@ -54,6 +55,8 @@ from app.modules.tool.schemas import (
 
 APPROVAL_RISK_LEVELS = {"high", "critical"}
 GRANT_ACTIONS = {"execute", "*", "tools:execute"}
+
+logger = get_logger(__name__)
 
 
 def _canonical(snapshot: Mapping[str, Any] | None) -> str:
@@ -184,10 +187,18 @@ class ToolService(ToolGateway):
                 )
             else:
                 if existing.source_type != ToolSourceType.NATIVE.value:
-                    raise ConflictError(
-                        f"Tool name '{descriptor.name}' is already used by a "
-                        f"{existing.source_type} tool"
+                    # A same-named HTTP/MCP tool already exists. Startup must not
+                    # fail on that, and silently overwriting an operator-defined
+                    # tool would be worse, so keep the existing row untouched.
+                    logger.warning(
+                        "native tool name is taken by another source type; skipping sync",
+                        extra={
+                            "event": "tool_sync_conflict",
+                            "tool": descriptor.name,
+                            "source_type": existing.source_type,
+                        },
                     )
+                    continue
                 latest = await self.repo.latest_version(existing.id)
                 self._apply_descriptor(existing, descriptor)
                 await self.db.flush()

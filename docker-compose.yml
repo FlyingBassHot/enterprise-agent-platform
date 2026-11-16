@@ -16,6 +16,8 @@ services:
       APP_LLM_BASE_URL: ${APP_LLM_BASE_URL:-http://host.docker.internal:8000/v1}
       APP_LLM_API_KEY: ${APP_LLM_API_KEY:-not-needed}
       APP_LLM_MODEL: ${APP_LLM_MODEL:-local-model}
+      APP_HTTP_TOOL_ALLOWED_HOSTS: ${APP_HTTP_TOOL_ALLOWED_HOSTS:-}
+      APP_HTTP_TOOL_MAX_RESPONSE_KB: ${APP_HTTP_TOOL_MAX_RESPONSE_KB:-256}
     volumes:
       - platform-data:/data
     ports:
