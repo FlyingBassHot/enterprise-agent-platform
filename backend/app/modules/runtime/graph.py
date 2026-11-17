@@ -82,14 +82,14 @@ def build_agent_graph(
     settings = get_settings()
 
     def _last_assistant_text(messages: list[dict[str, Any]]) -> str | None:
-        return next(
-            (
-                str(message.get("content"))
-                for message in reversed(messages)
-                if message.get("role") == "assistant" and message.get("content")
-            ),
-            None,
-        )
+        """Last assistant text from *this* turn, never from conversation history."""
+
+        for message in reversed(messages):
+            if message.get("role") == "user":
+                break
+            if message.get("role") == "assistant" and message.get("content"):
+                return str(message["content"])
+        return None
 
     async def agent_node(state: AgentState) -> dict[str, Any]:
         snapshot = AgentSnapshot.model_validate(state["agent_snapshot"])
@@ -345,13 +345,17 @@ def build_agent_graph(
             call_id = str(call.get("id") or "")
             approval_key = f"step:{int(state.get('steps', 0))}:call:{call_index}"
             name = str(call.get("name") or "")
-            if call_id and call_id in seen_call_ids:
-                # Provider-supplied ids are untrusted: a duplicate id could let
-                # one verdict overwrite another. Fail the whole duplicate shut.
+            if not call_id or call_id in seen_call_ids:
+                # Provider-supplied ids are untrusted: an empty or duplicate id
+                # could let one verdict overwrite another. Fail it shut.
                 decisions[call_index] = {
                     "approved": False,
                     "invalid": True,
-                    "comment": f"duplicate tool_call id: {call_id}",
+                    "comment": (
+                        f"duplicate tool_call id: {call_id}"
+                        if call_id
+                        else "empty tool_call id"
+                    ),
                 }
                 continue
             seen_call_ids.add(call_id)

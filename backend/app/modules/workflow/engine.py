@@ -566,8 +566,8 @@ class _WorkflowExecutor:
             seen_call_ids: set[str] = set()
             for call in assistant.tool_calls:
                 call_descriptor = descriptor_by_name.get(call.name)
-                if call.id in seen_call_ids:
-                    # Duplicate provider ids break approval/replay keying.
+                if not call.id or call.id in seen_call_ids:
+                    # Empty/duplicate provider ids break approval/replay keying.
                     messages.append(
                         ChatMessage(
                             role="tool",
@@ -578,7 +578,11 @@ class _WorkflowExecutor:
                                     "status": "denied",
                                     "ok": False,
                                     "error_code": "invalid_call",
-                                    "error": "duplicate tool_call id",
+                                    "error": (
+                                        "duplicate tool_call id"
+                                        if call.id
+                                        else "empty tool_call id"
+                                    ),
                                     "retryable": False,
                                 },
                                 ensure_ascii=False,

@@ -209,3 +209,13 @@ def test_effective_token_budget_is_capped_by_the_platform() -> None:
     assert effective_token_budget(0, 5000) == 5000
     assert effective_token_budget(0, None) is None
     assert effective_token_budget(1000, None) == 1000
+
+
+def test_error_guidance_covers_policy_denial_codes() -> None:
+    from app.modules.runtime.context import tool_error_details
+
+    for code in ("tool_not_bound", "invalid_call"):
+        resolved, hint, retryable = tool_error_details(code)
+        assert resolved == code
+        assert hint
+        assert retryable is False

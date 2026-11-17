@@ -323,6 +323,16 @@ ERROR_GUIDANCE: dict[str, tuple[str, str, bool]] = {
         "工具执行失败；阅读错误信息，修正参数后再重试。",
         True,
     ),
+    "tool_not_bound": (
+        "tool_not_bound",
+        "该工具未绑定到当前 Agent；改用已绑定工具或说明限制。",
+        False,
+    ),
+    "invalid_call": (
+        "invalid_call",
+        "工具调用 id 为空或重复；本轮调用无效，请重新规划后再提交。",
+        False,
+    ),
 }
 
 

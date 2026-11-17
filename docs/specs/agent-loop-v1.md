@@ -210,7 +210,10 @@ Environment 回答"这次运行在什么环境里工作"，Tool 回答"能做什
 ```
 
 `error_code` 取值固定：`tool_timeout` `permission_denied` `tool_unavailable`
-`approval_rejected` `tool_cancelled` `tool_failed`（映射见 `runtime/context.py: ERROR_GUIDANCE`）。
+`tool_not_bound` `invalid_call` `approval_rejected` `tool_cancelled` `tool_failed`
+（映射见 `runtime/context.py: ERROR_GUIDANCE`）。
+
+已知残余：一轮内出现重复 `tool_call_id` 时，我们以 `invalid_call` fail-closed，但会向 provider 回两条共享同一 id 的 tool 消息，OpenAI 兼容端点可能拒绝下一轮。该输入本身违反协议；拒绝执行优先于兼容性。
 
 **不变量 I4**：每个 `tool_call` 必有配对的 tool 消息，包括被拒绝、未绑定、超时、异常分支。
 

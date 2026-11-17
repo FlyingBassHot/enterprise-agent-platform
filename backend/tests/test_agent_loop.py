@@ -721,3 +721,32 @@ async def test_resume_refreshes_the_task_plan(checkpointer) -> None:  # noqa: F8
     )
     assert "新步骤" in plan_text
     assert "旧步骤" not in plan_text
+
+
+async def test_budget_fallback_ignores_previous_execution_history(checkpointer) -> None:  # noqa: F811
+    from app.core.contracts import ChatMessage
+
+    history = [
+        ChatMessage(role="user", content="previous question"),
+        ChatMessage(role="assistant", content="ANSWER FROM A PREVIOUS EXECUTION"),
+    ]
+    sink = FakeSink()
+    model = FakeModel([{"tool_calls": [{"name": "echo", "arguments": {"n": 1}}]}])
+    runtime = RuntimeService(
+        model_gateway=model,
+        tool_gateway=FakeTools([make_tool("echo", "low")]),
+        sink=sink,
+        checkpointer=checkpointer,
+    )
+
+    result = await runtime.run(
+        execution_id="exec-budget-history",
+        snapshot=make_snapshot(tool_names=["echo"], token_budget=10),
+        user=USER,
+        history=history,
+        user_text="new question",
+    )
+
+    assert result.status == "failed"
+    assert result.output_text is None
+    assert result.error is not None and "token_budget" in result.error
