@@ -1,0 +1,65 @@
+name: push-notify
+
+# 任何 push / PR 变化时把通知推到 ntfy（手机/桌面）。
+# 需要仓库 secret NTFY_TOPIC；可选 variable NTFY_SERVER（默认 https://ntfy.sh）。
+on:
+  push:
+  pull_request:
+    types: [opened, reopened, ready_for_review, closed]
+
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish event to ntfy
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_SERVER: ${{ vars.NTFY_SERVER || 'https://ntfy.sh' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${NTFY_TOPIC}" ]; then
+            echo "NTFY_TOPIC 未配置，跳过通知"
+            exit 0
+          fi
+
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            IFS=$'\t' read -r action number merged pr_title author pr_url < <(
+              jq -r '[.action, (.pull_request.number|tostring), (.pull_request.merged|tostring), .pull_request.title, .sender.login, .pull_request.html_url] | @tsv' "$GITHUB_EVENT_PATH"
+            )
+            case $action in
+              opened) verb="打开了" ;;
+              reopened) verb="重新打开了" ;;
+              ready_for_review) verb="标记为可合并" ;;
+              closed)
+                if [ "$merged" = "true" ]; then verb="合并了"; else verb="关闭了"; fi
+                ;;
+              *) verb="$action" ;;
+            esac
+            title="${GITHUB_REPOSITORY} · #${number}"
+            body="${author} ${verb} PR #${number}: ${pr_title}"$'\n'"${pr_url}"
+            click=$pr_url
+          else
+            branch=${GITHUB_REF_NAME}
+            title="${GITHUB_REPOSITORY} · ${branch}"
+            click=$(jq -r '.compare // empty' "$GITHUB_EVENT_PATH")
+            if [ "$(jq -r '.deleted' "$GITHUB_EVENT_PATH")" = "true" ]; then
+              body=$(jq -r '"\(.pusher.name) 删除了分支 \(.ref | sub("^refs/heads/"; ""))"' "$GITHUB_EVENT_PATH")
+            else
+              body=$(jq -r '
+                "\(.pusher.name) 推送到 \(.ref | sub("^refs/heads/"; ""))：\(.commits | length) 个提交",
+                (.commits[:10][] | "• \(.id[0:7]) \(.author.name): \(.message | split("\n")[0])"),
+                (if (.commits | length) > 10 then "… 还有 \((.commits | length) - 10) 个提交" else empty end)
+              ' "$GITHUB_EVENT_PATH")
+            fi
+          fi
+
+          jq -n \
+            --arg topic "$NTFY_TOPIC" \
+            --arg title "$title" \
+            --arg message "$body" \
+            --arg click "$click" \
+            '{topic:$topic, title:$title, message:$message, click:$click, tags:["github","arrow_up"], priority:3}' \
+            | curl -fsS -m 10 -H 'Content-Type: application/json' --data-binary @- "${NTFY_SERVER%/}" >/dev/null
