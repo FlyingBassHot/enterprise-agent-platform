@@ -525,3 +525,57 @@ async def test_resume_with_extra_tokens_continues(checkpointer) -> None:  # noqa
     )
     assert second.status == "completed"
     assert second.output_text == "finished after top-up"
+
+
+async def test_duplicate_call_ids_cannot_overwrite_a_rejection(checkpointer) -> None:  # noqa: F811
+    sink = FakeSink()
+    tools = FakeTools(
+        [make_tool("wire", "high", requires_approval=True), make_tool("echo", "low")]
+    )
+    model = FakeModel(
+        [
+            {
+                "tool_calls": [
+                    {"id": "dup", "name": "wire", "arguments": {"amount": 5}},
+                    {"id": "dup", "name": "echo", "arguments": {"value": 1}},
+                ]
+            },
+            {"content": "done"},
+        ]
+    )
+    runtime = RuntimeService(
+        model_gateway=model,
+        tool_gateway=tools,
+        sink=sink,
+        checkpointer=checkpointer,
+    )
+    snapshot = make_snapshot(tool_names=["wire", "echo"])
+
+    paused = await runtime.run(
+        execution_id="exec-dup-ids",
+        snapshot=snapshot,
+        user=USER,
+        user_text="pay",
+    )
+    assert paused.status == "waiting_approval"
+    approval_id = paused.approval_ids[0]
+
+    resumed = await runtime.resume(
+        execution_id="exec-dup-ids",
+        user=USER,
+        snapshot=snapshot,
+        decision={"approved": False, "comment": "no"},
+        interrupt_id=sink.interrupt_ids[approval_id],
+    )
+
+    assert resumed.status == "completed"
+    assert tools.invocations == []
+    completed = [
+        event["payload"]
+        for event in sink.events
+        if event["type"] == "tool_call_completed"
+    ]
+    assert {item.get("error_code") for item in completed} == {
+        "approval_rejected",
+        "invalid_call",
+    }

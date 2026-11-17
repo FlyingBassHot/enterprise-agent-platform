@@ -563,8 +563,75 @@ class _WorkflowExecutor:
             if not assistant.tool_calls:
                 final_text = text
                 break
+            seen_call_ids: set[str] = set()
             for call in assistant.tool_calls:
                 call_descriptor = descriptor_by_name.get(call.name)
+                if call.id in seen_call_ids:
+                    # Duplicate provider ids break approval/replay keying.
+                    messages.append(
+                        ChatMessage(
+                            role="tool",
+                            tool_call_id=call.id,
+                            name=call.name,
+                            content=json.dumps(
+                                {
+                                    "status": "denied",
+                                    "ok": False,
+                                    "error_code": "invalid_call",
+                                    "error": "duplicate tool_call id",
+                                    "retryable": False,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    )
+                    await self.sink.emit(
+                        "tool_call_completed",
+                        {
+                            "tool_call_id": call.id,
+                            "tool_name": call.name,
+                            "status": "denied",
+                            "ok": False,
+                            "error": "invalid_call",
+                            "error_code": "invalid_call",
+                            "node_id": node.id,
+                        },
+                    )
+                    continue
+                seen_call_ids.add(call.id)
+                if call_descriptor is None:
+                    # The model may name tools that are not bound to this agent;
+                    # least privilege is enforced here, not merely advertised.
+                    messages.append(
+                        ChatMessage(
+                            role="tool",
+                            tool_call_id=call.id,
+                            name=call.name,
+                            content=json.dumps(
+                                {
+                                    "status": "denied",
+                                    "ok": False,
+                                    "error_code": "tool_not_bound",
+                                    "error": f"tool not bound to this agent: {call.name}",
+                                    "retryable": False,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    )
+                    await self.sink.emit(
+                        "tool_call_completed",
+                        {
+                            "tool_call_id": call.id,
+                            "tool_name": call.name,
+                            "status": "denied",
+                            "ok": False,
+                            "error": "tool_not_bound",
+                            "error_code": "tool_not_bound",
+                            "node_id": node.id,
+                        },
+                    )
+                    continue
                 await self.sink.emit(
                     "tool_call_started",
                     {

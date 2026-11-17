@@ -130,3 +130,48 @@ async def test_audit_tool_denies_read_of_foreign_artifact(
     )
     assert result.ok is False
     assert "artifact" in (result.error or "").lower() or "读取" in (result.error or "")
+
+
+async def test_audit_tool_respects_workspace_scope(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    from app.core.ids import new_id
+    from app.modules.execution.models import AgentExecution
+    from app.modules.execution.repository import ExecutionRepository
+
+    actor = await _actor(client, db)
+    artifact_id = await _create_artifact(db, actor)
+    register_audit()
+    tools = ToolService(db)
+    await tools.sync_native()
+
+    execution = AgentExecution(
+        id=new_id(),
+        agent_id="agent-1",
+        user_id=actor.user_id,
+        status="running",
+        input_text="audit",
+        input_payload={"input": "audit", "artifact_ids": []},
+    )
+    await ExecutionRepository(db).create_execution(execution)
+    await db.commit()
+
+    invocation = ToolInvocation(
+        tool_name="analyze_transactions",
+        arguments={"artifact_id": artifact_id},
+        user_id=actor.user_id,
+        execution_id=execution.id,
+    )
+    outside = await tools.execute(invocation, actor)
+    assert outside.ok is False
+    assert "workspace" in (outside.error or "")
+
+    execution.input_payload = {
+        **(execution.input_payload or {}),
+        "artifact_ids": [artifact_id],
+    }
+    await db.commit()
+
+    inside = await tools.execute(invocation, actor)
+    assert inside.ok, inside.error
+    assert inside.output["filename"] == "audit_sample.xlsx"

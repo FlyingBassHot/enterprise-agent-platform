@@ -8,17 +8,28 @@ from app.core.contracts import ToolContext, UserContext
 from app.core.exceptions import ToolError
 
 
-async def load_artifact_bytes(artifact_id: str, user: UserContext) -> tuple[bytes, str]:
-    """Load uploaded artifact bytes through the execution module boundary.
+async def load_artifact_bytes(artifact_id: str, ctx: ToolContext) -> tuple[bytes, str]:
+    """Load artifact bytes inside the run's declared environment.
 
-    ``read_artifact_for_tool`` returns ``(ArtifactInfo, bytes)``. The import is
-    lazy so the domain pack can be imported while the execution module is
-    unavailable (unit tests, documentation generation).
+    During a run the workspace scope and size cap apply (same boundary as
+    ``platform_read_artifact``); without an execution context (unit tests,
+    tool playground) the ACL-only path is used. Imports stay lazy so the domain
+    pack can be imported without the execution module.
     """
+
+    if ctx.execution_id:
+        from app.modules.execution.environments import read_workspace_resource
+
+        resource, data = await read_workspace_resource(
+            ctx.execution_id, artifact_id, ctx.user
+        )
+        if not isinstance(data, (bytes, bytearray)):
+            raise ToolError("无法读取上传文件内容")
+        return bytes(data), resource.name
 
     from app.modules.execution.artifacts import read_artifact_for_tool
 
-    info, data = await read_artifact_for_tool(artifact_id, user)
+    info, data = await read_artifact_for_tool(artifact_id, ctx.user)
     if not isinstance(data, (bytes, bytearray)):
         raise ToolError("无法读取上传文件内容")
     filename = getattr(info, "filename", "") or ""

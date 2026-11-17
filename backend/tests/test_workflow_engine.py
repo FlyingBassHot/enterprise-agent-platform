@@ -851,3 +851,34 @@ async def test_agent_node_enforces_agent_required_permissions(checkpointer) -> N
     )
     assert result.status == "failed"
     assert "requires permissions" in (result.error or "")
+
+
+async def test_agent_node_denies_tools_that_are_not_bound(checkpointer) -> None:
+    sink = FakeSink()
+    tools = FakeTools([make_tool("echo", "low"), make_tool("dangerous", "low")])
+    model = FakeModel(
+        [
+            {"tool_calls": [{"name": "dangerous", "arguments": {"value": "x"}}]},
+            {"content": "agent final"},
+        ]
+    )
+    loader = FakeLoader(make_agent(tool_names=["echo"]))
+    runtime = make_runtime(
+        model=model, tools=tools, loader=loader, sink=sink, checkpointer=checkpointer
+    )
+
+    result = await runtime.run(
+        execution_id="exec-agent-unbound",
+        snapshot=make_snapshot(_agent_definition()),
+        user=USER,
+        variables={"topic": "billing"},
+    )
+
+    assert result.status == "completed", result.error
+    assert tools.invocations == []
+    denied = [
+        event["payload"]
+        for event in sink.events
+        if event["type"] == "tool_call_completed"
+    ]
+    assert denied and denied[-1]["error_code"] == "tool_not_bound"

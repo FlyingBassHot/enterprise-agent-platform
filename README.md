@@ -264,7 +264,7 @@ npx vue-tsc --noEmit -p tsconfig.app.json
 npm run build
 ```
 
-当前结果：**230 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
+当前结果：**233 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
 
 ---
 

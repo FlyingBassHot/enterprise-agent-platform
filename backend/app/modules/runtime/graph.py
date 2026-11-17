@@ -339,11 +339,22 @@ def build_agent_graph(
 
         # Phase 1: resolve every approval before executing anything, so a
         # resumed node never replays already executed tool side effects.
-        decisions: dict[str, dict[str, Any]] = {}
+        decisions: dict[int, dict[str, Any]] = {}
+        seen_call_ids: set[str] = set()
         for call_index, call in enumerate(pending):
             call_id = str(call.get("id") or "")
             approval_key = f"step:{int(state.get('steps', 0))}:call:{call_index}"
             name = str(call.get("name") or "")
+            if call_id and call_id in seen_call_ids:
+                # Provider-supplied ids are untrusted: a duplicate id could let
+                # one verdict overwrite another. Fail the whole duplicate shut.
+                decisions[call_index] = {
+                    "approved": False,
+                    "invalid": True,
+                    "comment": f"duplicate tool_call id: {call_id}",
+                }
+                continue
+            seen_call_ids.add(call_id)
             descriptor = descriptor_map.get(name)
             # One decision function for availability, binding, access and
             # approval. Agent config may add approvals; it can never weaken
@@ -355,7 +366,7 @@ def build_agent_graph(
                 agent_approval_levels=snapshot.approval_risk_levels,
             )
             if policy.effect is PolicyEffect.DENY:
-                decisions[call_id] = {
+                decisions[call_index] = {
                     "approved": False,
                     "comment": policy.reason,
                     "policy": policy,
@@ -363,14 +374,14 @@ def build_agent_graph(
                 continue
             signature = _tool_signature(name, call.get("arguments") or {})
             if signature == last_signature and repeat_streak >= 2:
-                decisions[call_id] = {
+                decisions[call_index] = {
                     "approved": False,
                     "comment": "identical tool call repeated without new information",
                     "repeated": True,
                 }
                 continue
             if policy.effect is not PolicyEffect.REQUIRE_APPROVAL:
-                decisions[call_id] = {"approved": True, "comment": "", "policy": policy}
+                decisions[call_index] = {"approved": True, "comment": "", "policy": policy}
                 continue
             raw_arguments = dict(call.get("arguments") or {})
             safe_arguments = mask_arguments(
@@ -408,7 +419,7 @@ def build_agent_graph(
                 }
             )
             decision = _normalize_decision(raw_decision)
-            decisions[call_id] = decision
+            decisions[call_index] = decision
             await sink.emit(
                 "approval_resolved",
                 {
@@ -422,12 +433,44 @@ def build_agent_graph(
 
         # Phase 2: execute the calls.
         tool_messages: list[dict[str, Any]] = []
-        for call in pending:
+        for call_index, call in enumerate(pending):
             call_id = str(call.get("id") or "")
             name = str(call.get("name") or "")
             arguments = dict(call.get("arguments") or {})
             descriptor = descriptor_map.get(name)
-            decision = decisions.get(call_id) or {"approved": False, "comment": ""}
+            decision = decisions.get(call_index) or {"approved": False, "comment": ""}
+            if decision.get("invalid"):
+                content = json.dumps(
+                    tool_error_content(
+                        "failed",
+                        error=str(decision.get("comment") or "invalid tool call"),
+                        tool=name,
+                        code="invalid_call",
+                        hint="同一轮工具调用 id 重复；请重新规划并只提交一次。",
+                        retryable=False,
+                    ),
+                    ensure_ascii=False,
+                )
+                tool_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "name": name,
+                        "content": content,
+                    }
+                )
+                await sink.emit(
+                    "tool_call_completed",
+                    {
+                        "tool_call_id": call_id,
+                        "tool_name": name,
+                        "status": "denied",
+                        "ok": False,
+                        "error": "invalid_call",
+                        "error_code": "invalid_call",
+                    },
+                )
+                continue
             policy = decision.get("policy")
 
             if policy is not None and policy.effect is PolicyEffect.DENY:
@@ -531,6 +574,7 @@ def build_agent_graph(
                         "status": "rejected",
                         "ok": False,
                         "error": decision.get("comment") or "rejected by user",
+                        "error_code": "approval_rejected",
                     },
                 )
                 continue

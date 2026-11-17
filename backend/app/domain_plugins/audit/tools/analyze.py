@@ -22,10 +22,10 @@ async def analyze_transactions_tool(
 ) -> dict[str, Any]:
     artifact_id = require_artifact_id(arguments)
     options = parse_options(arguments)
-    user = require_context_user(ctx)
+    require_context_user(ctx)
 
     try:
-        data, filename = await load_artifact_bytes(artifact_id, user)
+        data, filename = await load_artifact_bytes(artifact_id, ctx)
     except ToolError:
         raise
     except Exception as exc:  # noqa: BLE001 - execution module raises domain errors

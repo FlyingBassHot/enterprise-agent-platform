@@ -125,9 +125,9 @@ async def generate_audit_report_tool(
         if not isinstance(artifact_id, str) or not artifact_id.strip():
             raise ToolError("artifact_id 必须是非空字符串")
         resolved_artifact = artifact_id.strip()
-        user = require_context_user(ctx)
+        require_context_user(ctx)
         try:
-            data, filename = await load_artifact_bytes(resolved_artifact, user)
+            data, filename = await load_artifact_bytes(resolved_artifact, ctx)
         except ToolError:
             raise
         except Exception as exc:  # noqa: BLE001 - execution module raises domain errors
