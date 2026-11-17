@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.contracts import AgentSnapshot, ToolDescriptor, UserContext
 from app.core.exceptions import (
     AppError,
@@ -15,6 +16,7 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.core.ids import new_id
+from app.core.policy import effective_token_budget
 from app.modules.agent.models import Agent, AgentVersion
 from app.modules.agent.repository import AgentRepository
 from app.modules.agent.schemas import (
@@ -151,6 +153,10 @@ class AgentService:
             ),
             verification_require_citations=config.execution.verification.require_citations,
             verification_max_retries=config.execution.verification.max_retries,
+            token_budget=effective_token_budget(
+                get_settings().execution_token_budget,
+                config.execution.token_budget,
+            ),
             workflow_id=(
                 workflow_snapshot.workflow_id if workflow_snapshot else None
             ),

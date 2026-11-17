@@ -434,3 +434,94 @@ async def test_plan_updates_are_persisted_to_the_task(checkpointer) -> None:  # 
     assert result.status == "completed"
     assert gateway.applied == [plan]
     assert "plan_updated" in sink.types()
+
+
+async def test_token_budget_stops_before_executing_tools(checkpointer) -> None:  # noqa: F811
+    sink = FakeSink()
+    tools = FakeTools([make_tool("echo", "low")])
+    model = FakeModel(
+        [
+            {
+                "content": "partial answer",
+                "tool_calls": [{"name": "echo", "arguments": {"value": 1}}],
+            }
+        ]
+    )
+    runtime = RuntimeService(
+        model_gateway=model,
+        tool_gateway=tools,
+        sink=sink,
+        checkpointer=checkpointer,
+    )
+
+    result = await runtime.run(
+        execution_id="exec-token-guard",
+        snapshot=make_snapshot(tool_names=["echo"], token_budget=10),
+        user=USER,
+        user_text="go",
+    )
+
+    assert result.status == "incomplete"
+    assert result.output_text == "partial answer"
+    assert tools.invocations == []
+    assert result.output_payload["stop_reason"] == "token_budget"
+    assert result.output_payload["token_budget"] == 10
+    assert "budget_exhausted" in sink.types()
+
+
+async def test_token_budget_without_text_fails(checkpointer) -> None:  # noqa: F811
+    sink = FakeSink()
+    tools = FakeTools([make_tool("echo", "low")])
+    model = FakeModel([{"tool_calls": [{"name": "echo", "arguments": {}}]}])
+    runtime = RuntimeService(
+        model_gateway=model,
+        tool_gateway=tools,
+        sink=sink,
+        checkpointer=checkpointer,
+    )
+
+    result = await runtime.run(
+        execution_id="exec-token-guard-silent",
+        snapshot=make_snapshot(tool_names=["echo"], token_budget=10),
+        user=USER,
+        user_text="go",
+    )
+
+    assert result.status == "failed"
+    assert result.error is not None and "token_budget" in result.error
+    assert result.output_payload["stop_reason"] == "token_budget"
+
+
+async def test_resume_with_extra_tokens_continues(checkpointer) -> None:  # noqa: F811
+    sink = FakeSink()
+    tools = FakeTools([make_tool("echo", "low")])
+    model = FakeModel(
+        [
+            {"content": "partial", "tool_calls": [{"name": "echo", "arguments": {}}]},
+            {"content": "finished after top-up"},
+        ]
+    )
+    snapshot = make_snapshot(tool_names=["echo"], token_budget=10)
+    runtime = RuntimeService(
+        model_gateway=model,
+        tool_gateway=tools,
+        sink=sink,
+        checkpointer=checkpointer,
+    )
+
+    first = await runtime.run(
+        execution_id="exec-token-resume",
+        snapshot=snapshot,
+        user=USER,
+        user_text="go",
+    )
+    assert first.status == "incomplete"
+
+    second = await runtime.resume(
+        execution_id="exec-token-resume",
+        user=USER,
+        snapshot=snapshot,
+        extra_tokens=100,
+    )
+    assert second.status == "completed"
+    assert second.output_text == "finished after top-up"

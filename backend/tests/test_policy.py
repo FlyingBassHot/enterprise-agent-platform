@@ -12,6 +12,7 @@ from app.core.policy import (
     decide_tool_access,
     decide_tool_approval,
     decide_tool_call,
+    effective_token_budget,
 )
 from app.modules.permission.service import PermissionService
 from app.modules.runtime.service import RuntimeService
@@ -200,3 +201,11 @@ async def test_resource_decision_is_structured(client, admin, db) -> None:  # no
             action="read",
             owner_id=actor.user_id,
         )
+
+
+def test_effective_token_budget_is_capped_by_the_platform() -> None:
+    assert effective_token_budget(1000, 500) == 500
+    assert effective_token_budget(1000, 5000) == 1000
+    assert effective_token_budget(0, 5000) == 5000
+    assert effective_token_budget(0, None) is None
+    assert effective_token_budget(1000, None) == 1000

@@ -35,6 +35,8 @@ class ExecutionSettings(BaseModel):
         default_factory=lambda: ["high", "critical"]
     )
     verification: VerificationSettings = Field(default_factory=VerificationSettings)
+    # Optional per-agent cap; the platform setting is an upper bound.
+    token_budget: int | None = Field(default=None, ge=0)
     streaming: bool = True
 
 

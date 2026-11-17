@@ -95,6 +95,17 @@ def decide_tool_approval(
     return allow()
 
 
+def effective_token_budget(platform_budget: int, agent_budget: int | None) -> int | None:
+    """Platform setting is the ceiling; an agent may lower it, never raise it."""
+
+    candidates = [
+        value
+        for value in (int(platform_budget or 0), int(agent_budget or 0))
+        if value > 0
+    ]
+    return min(candidates) if candidates else None
+
+
 def decide_tool_call(
     descriptor: ToolDescriptor | None,
     *,
@@ -124,5 +135,6 @@ __all__ = [
     "decide_tool_approval",
     "decide_tool_call",
     "deny",
+    "effective_token_budget",
     "require_approval",
 ]

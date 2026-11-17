@@ -81,6 +81,16 @@ def build_agent_graph(
 ) -> CompiledStateGraph:
     settings = get_settings()
 
+    def _last_assistant_text(messages: list[dict[str, Any]]) -> str | None:
+        return next(
+            (
+                str(message.get("content"))
+                for message in reversed(messages)
+                if message.get("role") == "assistant" and message.get("content")
+            ),
+            None,
+        )
+
     async def agent_node(state: AgentState) -> dict[str, Any]:
         snapshot = AgentSnapshot.model_validate(state["agent_snapshot"])
         execution_id = state.get("execution_id", "")
@@ -91,17 +101,25 @@ def build_agent_graph(
             or settings.execution_max_iterations
         )
         messages = list(state.get("messages", []))
+        partial = _last_assistant_text(messages)
+        token_budget = state.get("token_budget")
+        used_tokens = int((state.get("usage") or {}).get("total_tokens", 0))
+        if token_budget and used_tokens >= int(token_budget):
+            # Resource guard: never start another model call past the cap.
+            await sink.emit(
+                "budget_exhausted",
+                {"kind": "tokens", "used": used_tokens, "limit": int(token_budget)},
+            )
+            return {
+                "error": None,
+                "steps": steps,
+                "pending_tool_calls": [],
+                "final_output": partial,
+                "stop_reason": "token_budget",
+            }
         if steps >= max_iterations:
             # The loop is out of budget. A partial answer is still worth
             # returning: the execution becomes resumable instead of failing.
-            partial = next(
-                (
-                    str(message.get("content"))
-                    for message in reversed(messages)
-                    if message.get("role") == "assistant" and message.get("content")
-                ),
-                None,
-            )
             if partial:
                 return {
                     "error": None,
@@ -246,6 +264,24 @@ def build_agent_graph(
         )
 
         next_steps = steps + 1
+        if token_budget and int(usage.get("total_tokens", 0)) >= int(token_budget):
+            await sink.emit(
+                "budget_exhausted",
+                {
+                    "kind": "tokens",
+                    "used": int(usage.get("total_tokens", 0)),
+                    "limit": int(token_budget),
+                },
+            )
+            return {
+                "messages": messages,
+                "steps": next_steps,
+                "error": None,
+                "pending_tool_calls": [],
+                "final_output": text or None,
+                "stop_reason": "token_budget",
+                "usage": usage,
+            }
         if error:
             return {
                 "messages": messages,

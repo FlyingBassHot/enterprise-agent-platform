@@ -70,6 +70,8 @@ class Settings(BaseSettings):
 
     execution_max_iterations: int = 12
     execution_timeout_seconds: int = 600
+    # Last-resort resource guard per execution. 0 disables it.
+    execution_token_budget: int = 200_000
     # Char-based proxy for the model context budget. Older tool results are
     # compacted (summarized deterministically) once the transcript exceeds it.
     context_char_budget: int = 60_000

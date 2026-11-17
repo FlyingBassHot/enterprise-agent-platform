@@ -237,6 +237,7 @@ class RuntimeService:
             "last_tool_signature": None,
             "last_tool_digest": None,
             "repeat_streak": 0,
+            "token_budget": snapshot.token_budget,
             "usage": {},
             "knowledge_citations": [
                 {
@@ -282,28 +283,28 @@ class RuntimeService:
         decision: dict[str, Any] | None = None,
         interrupt_id: str | None = None,
         extra_iterations: int | None = None,
+        extra_tokens: int | None = None,
     ) -> RuntimeResult:
         checkpointer = await self._resolve_checkpointer()
         skills = await self._resolve_skills(snapshot, user) if snapshot else []
         graph = self._graph(snapshot, user, checkpointer, skills)  # type: ignore[arg-type]
         config = self._config(execution_id, snapshot)
         await self._open_environment(execution_id, user)
-        if extra_iterations and decision is None and interrupt_id is None:
+        if (extra_iterations or extra_tokens) and decision is None and interrupt_id is None:
             # Raising the budget before resuming is what turns an exhausted run
             # into progress instead of an immediate second stop. The graph ended
             # on the agent node, so re-enter through "tools" to schedule it again.
-            current = await self._current_iterations(graph, config, snapshot)
-            extended = min(200, current + max(1, int(extra_iterations)))
-            await graph.aupdate_state(
-                config,
-                {
-                    "max_iterations": extended,
-                    "stop_reason": None,
-                    "final_output": None,
-                },
-                as_node="tools",
+            updates: dict[str, Any] = {"stop_reason": None, "final_output": None}
+            if extra_iterations:
+                current = await self._current_iterations(graph, config, snapshot)
+                updates["max_iterations"] = min(200, current + max(1, int(extra_iterations)))
+            if extra_tokens:
+                current_tokens = await self._current_token_budget(graph, config, snapshot)
+                updates["token_budget"] = current_tokens + max(1, int(extra_tokens))
+            await graph.aupdate_state(config, updates, as_node="tools")
+            config = self._config(
+                execution_id, snapshot, iterations=updates.get("max_iterations")
             )
-            config = self._config(execution_id, snapshot, iterations=extended)
         if decision is None and interrupt_id is None:
             graph_input: Any = None
         elif interrupt_id:
@@ -372,6 +373,24 @@ class RuntimeService:
         values = dict(getattr(saved, "values", {}) or {})
         return int(values.get("max_iterations") or fallback)
 
+    async def _current_token_budget(
+        self,
+        graph: Any,
+        config: dict[str, Any],
+        snapshot: AgentSnapshot | None,
+    ) -> int:
+        fallback = int(
+            (snapshot.token_budget if snapshot else 0)
+            or get_settings().execution_token_budget
+            or 0
+        )
+        try:
+            saved = await graph.aget_state(config)
+        except Exception:  # noqa: BLE001 - missing checkpoint means nothing to extend
+            return fallback
+        values = dict(getattr(saved, "values", {}) or {})
+        return int(values.get("token_budget") or fallback)
+
     async def _result_from_state(self, result: Any, execution_id: str) -> RuntimeResult:
         state: dict[str, Any] = result if isinstance(result, dict) else {}
         interrupts = state.get("__interrupt__") or []
@@ -399,7 +418,10 @@ class RuntimeService:
                 "max_iterations",
                 "verification_failed",
                 "no_progress",
+                "token_budget",
             }
+        if state.get("token_budget"):
+            output_payload["token_budget"] = int(state["token_budget"])
         if interrupts:
             approval_ids: list[str] = []
             interrupt_map: dict[str, str] = {}
@@ -442,7 +464,19 @@ class RuntimeService:
                 usage=usage,
                 error="no_progress: identical tool call repeated without new information",
             )
-        if stop_reason in {"max_iterations", "verification_failed"} and final_output is not None:
+        if stop_reason == "token_budget" and final_output is None:
+            return RuntimeResult(
+                status="failed",
+                output_text=None,
+                output_payload=output_payload,
+                usage=usage,
+                error="token_budget: execution stopped at the token cap before producing an answer",
+            )
+        if stop_reason in {
+            "max_iterations",
+            "verification_failed",
+            "token_budget",
+        } and final_output is not None:
             return RuntimeResult(
                 status="incomplete",
                 output_text=str(final_output),

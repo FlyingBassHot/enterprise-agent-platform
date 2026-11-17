@@ -200,6 +200,7 @@ class AgentSnapshot(BaseModel):
     verification_require_plan_completion: bool = True
     verification_require_citations: bool = False
     verification_max_retries: int = 1
+    token_budget: int | None = None
     workflow_id: str | None = None
     workflow_version_id: str | None = None
     required_permissions: list[str] = Field(default_factory=list)

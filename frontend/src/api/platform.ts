@@ -148,11 +148,16 @@ export const executionsApi = {
       .then((r) => r.data),
   cancel: (id: string) =>
     client.post<{ execution_id: string; status: string }>(`/executions/${id}/cancel`).then((r) => r.data),
-  resume: (id: string, extraIterations?: number) =>
+  resume: (id: string, options?: { extraIterations?: number; extraTokens?: number }) =>
     client
       .post<ExecutionInfo>(
         `/executions/${id}/resume`,
-        extraIterations ? { extra_iterations: extraIterations } : undefined,
+        options
+          ? {
+              extra_iterations: options.extraIterations,
+              extra_tokens: options.extraTokens,
+            }
+          : undefined,
       )
       .then((r) => r.data),
   toolCalls: (id: string) =>

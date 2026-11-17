@@ -38,6 +38,8 @@ class AgentState(TypedDict, total=False):
     tool_descriptors: list[dict[str, Any]]
     # Current iteration budget; resume may raise it.
     max_iterations: int
+    # Last-resort token cap for this execution; resume may raise it.
+    token_budget: int | None
     # Model-maintained plan, re-injected on every model call.
     plan: list[dict[str, str]]
     # Why the loop stopped early; "max_iterations" / "verification_failed"

@@ -378,9 +378,19 @@ async function resumeExecution() {
   if (!detail.value) return
   resumeLoading.value = true
   try {
+    const stopReason = String(
+      (detail.value.output_payload as Record<string, unknown> | null)?.stop_reason || '',
+    )
+    const tokenBudget = Number(
+      (detail.value.output_payload as Record<string, unknown> | null)?.token_budget || 0,
+    )
     await executionsApi.resume(
       detail.value.id,
-      status.value === 'incomplete' ? 8 : undefined,
+      stopReason === 'token_budget'
+        ? { extraTokens: tokenBudget || 200_000 }
+        : status.value === 'incomplete'
+          ? { extraIterations: 8 }
+          : undefined,
     )
     ElMessage.success('已恢复执行')
     await load()

@@ -208,6 +208,7 @@ async def resume_execution(
         actor,
         execution_id,
         extra_iterations=payload.extra_iterations if payload else None,
+        extra_tokens=payload.extra_tokens if payload else None,
     )
 
 

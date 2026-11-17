@@ -110,7 +110,7 @@ START → agent(decide) ──有 tool_calls──→ tools(act) → agent …
 1. 存在 `__interrupt__` → `waiting_approval`
 2. `state.error` → `failed`
 3. `stop_reason == no_progress` 且无 `final_output` → `failed`（`no_progress`）
-4. `stop_reason ∈ {max_iterations, verification_failed, no_progress}` 且有文本 → **`incomplete`**
+4. `stop_reason ∈ {max_iterations, verification_failed, no_progress, token_budget}` 且有文本 → **`incomplete`**
 5. `final_output is None` → `failed`（"finished without producing an answer"）
 6. 否则 → `completed`
 
@@ -128,6 +128,7 @@ Verifier 永远不能把执行直接判为 `completed` 或 `failed`。
 | `max_iterations` | Agent 12 / seed 8 | 状态内，resume 可加 | 是（`extra_iterations`，总上限 200） | 计数单位是"轮次"，非 token |
 | `timeout_seconds` | 600 | 单次 `ainvoke` | 是 | **resume 时墙钟重置**，跨恢复无总时限 |
 | `context_char_budget` | 60000 字符 | 单轮投影 | — | 字符代理，非真实 token |
+| `token_budget` | 平台 200k（可关） | 单次执行累计 `usage.total_tokens` | 是（`extra_tokens`） | provider 不返回 usage 时不生效 |
 | `recursion_limit` | `max(25, 4×iterations+10)` | LangGraph | 随 iterations 抬高 | 与 iterations 强耦合 |
 
 **不变量 I3**：预算耗尽必须保留 `usage`、`steps`、`plan` 与部分答案，且事件为 `execution_incomplete`。
@@ -135,6 +136,11 @@ Verifier 永远不能把执行直接判为 `completed` 或 `failed`。
 **无进展检测（已实现）**：同一工具 + 同一参数 + 相同结果的调用允许执行两次；
 第三次相同调用不再执行，回 `repeated_call`（不可重试），并发 `no_progress_detected`，
 执行以 `stop_reason=no_progress` 收尾。用于挡住"重试同一个错误"和"完成后继续空转"。
+
+**Token 资源兜底（已实现）**：`APP_EXECUTION_TOKEN_BUDGET`（默认 200000，0 关闭）是最后一次模型调用之后的硬护栏；
+Agent 配置只能降低不能提高。达到上限时不再发起新的模型调用、不执行本轮的 tool_calls，
+有文本则 `incomplete`（`stop_reason=token_budget`），无文本则 `failed`。可用
+`POST /executions/{id}/resume {extra_tokens}` 追加额度；有效额度随执行写回 `output_payload.token_budget`。
 
 **工具幂等重放（已实现）**：`tool_executions` 记录 `(execution_id, tool_call_id)` 唯一键；
 重放同一调用（同工具、同脱敏参数）直接返回已记录的成功结果，`replayed=true`，不再触发副作用。
@@ -183,6 +189,7 @@ Environment 回答"这次运行在什么环境里工作"，Tool 回答"能做什
 **不变量 I12**：策略拒绝不执行工具、不产生副作用，并以结构化 `error_code` 回给模型。
 **不变量 I13**：同一工具 + 同参数 + 同结果只允许执行两次；第三次不执行，以 `no_progress` 收尾。
 **不变量 I14**：同一 `(execution_id, tool_call_id)` 的成功结果只产生一次副作用，重放返回记录值。
+**不变量 I15**：达到 token 上限后不再发起模型调用；Agent 配置只能收紧平台上限，不能放宽。
 
 ## 8. 观察与错误契约
 
@@ -273,6 +280,7 @@ Verifier 通过 `VerifierGateway` 注入，runtime 不 import 领域模块；实
 | `plan_updated` | 计划变更 | plan | 否 |
 | `context_compacted` | 压缩生效 | chars_saved, budget_chars | 否 |
 | `environment_opened` | 环境就绪 | kind, environment_id, resources, constraints | 否 |
+| `budget_exhausted` | 触碰资源护栏 | kind, used, limit | 否（随终态事件结束） |
 | `verification_started` | 进入终检 | attempt, plan_steps, citations, answer_chars | 否 |
 | `verification_completed` | 终检结束 | status, attempt, next_action, issues | 否 |
 | `tool_call_started` | 执行前 | tool_call_id, tool_name, arguments(脱敏) | 否 |
@@ -335,3 +343,4 @@ Verifier 通过 `VerifierGateway` 注入，runtime 不 import 领域模块；实
 | 2026-11-16 | 新增 `EnvironmentGateway` 与 `ArtifactWorkspace`：环境声明、只读范围、生命周期事件 |
 | 2026-11-16 | 策略收敛到 `app/core/policy.py`：工具访问/审批/资源授权共用 `PolicyDecision`，事件携带原因 |
 | 2026-11-16 | 新增无进展检测与工具幂等重放；取消/崩溃路径先回滚事务再写终态，消除 SQLite 写锁等待 |
+| 2026-11-17 | 新增 token 资源兜底（平台上限 + Agent 只能降低）、`budget_exhausted` 事件与 `extra_tokens` 续跑 |

@@ -399,3 +399,27 @@ async def test_budget_exhaustion_is_resumable(
     finished = await _wait_for_status(client, admin, execution["id"], {"completed"})
     assert finished["output_text"] == "final answer"
     assert finished["output_payload"].get("partial") is not True
+
+
+async def test_token_budget_is_resumable(
+    client: AsyncClient, admin: dict[str, str], install_runtime
+) -> None:
+    snapshot = make_snapshot(token_budget=10)
+    model = FakeModel([{"content": "partial answer"}])
+    install_runtime(model=model, tools=FakeTools(), loader=FakeLoader(snapshot))
+
+    execution = await _create_execution(client, admin, input="do the job")
+    body = await _wait_for_status(client, admin, execution["id"], {"incomplete"})
+    assert body["output_text"] == "partial answer"
+    assert body["output_payload"]["stop_reason"] == "token_budget"
+    assert body["output_payload"]["token_budget"] == 10
+
+    resumed = await client.post(
+        f"{API}/executions/{execution['id']}/resume",
+        headers=admin,
+        json={"extra_tokens": 100},
+    )
+    assert resumed.status_code == 200, resumed.text
+
+    finished = await _wait_for_status(client, admin, execution["id"], {"completed"})
+    assert finished["output_text"] == "partial answer"

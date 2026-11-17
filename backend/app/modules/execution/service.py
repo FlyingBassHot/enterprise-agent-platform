@@ -501,6 +501,7 @@ class ExecutionService:
         execution_id: str,
         *,
         extra_iterations: int | None = None,
+        extra_tokens: int | None = None,
     ) -> ExecutionOut:
         self._require(actor, "executions:write")
         execution = await self._load_execution(execution_id)
@@ -554,6 +555,7 @@ class ExecutionService:
             decision=decision,
             interrupt_id=interrupt_id,
             extra_iterations=extra_iterations,
+            extra_tokens=extra_tokens,
         )
         return ExecutionOut.model_validate(execution)
 
@@ -694,6 +696,7 @@ class ExecutionService:
         decision: dict[str, Any] | None = None,
         interrupt_id: str | None = None,
         extra_iterations: int | None = None,
+        extra_tokens: int | None = None,
     ) -> None:
         if not get_settings().worker_inline:
             return
@@ -708,6 +711,7 @@ class ExecutionService:
                 decision=decision,
                 interrupt_id=interrupt_id,
                 extra_iterations=extra_iterations,
+                extra_tokens=extra_tokens,
             )
         )
         _TASKS[execution_id] = task
@@ -727,6 +731,7 @@ class ExecutionService:
         decision: dict[str, Any] | None,
         interrupt_id: str | None,
         extra_iterations: int | None = None,
+        extra_tokens: int | None = None,
     ) -> None:
         async with self.session_factory() as db:
             worker = ExecutionService(
@@ -750,6 +755,7 @@ class ExecutionService:
                 decision=decision,
                 interrupt_id=interrupt_id,
                 extra_iterations=extra_iterations,
+                extra_tokens=extra_tokens,
             )
 
     async def _execute(
@@ -761,6 +767,7 @@ class ExecutionService:
         decision: dict[str, Any] | None = None,
         interrupt_id: str | None = None,
         extra_iterations: int | None = None,
+        extra_tokens: int | None = None,
     ) -> None:
         execution = await self.repo.get_execution(execution_id)
         if execution is None:
@@ -864,6 +871,7 @@ class ExecutionService:
                             decision=decision,
                             interrupt_id=interrupt_id,
                             extra_iterations=extra_iterations,
+                            extra_tokens=extra_tokens,
                         )
             await self._apply_result(execution_id, result, sink)
         except asyncio.CancelledError:

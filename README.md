@@ -156,6 +156,7 @@ APP_HTTP_TOOL_MAX_RESPONSE_KB=256   # 单次响应截断上限，默认 256 KB
 - **上下文预算**：`APP_CONTEXT_CHAR_BUDGET`（默认 60000 字符）是模型上下文的字符替代指标。超出后，较早的工具结果被替换为确定性摘要（保留 status / error_code / output 键名 / 原文 digest / 原始长度），最近 `APP_CONTEXT_KEEP_RECENT_MESSAGES`（默认 6）条消息保持原样；再不够才压缩较早的 assistant 文本。压缩只作用于本轮发给模型的投影，持久化的会话历史不变，并发出 `context_compacted` 事件。
 - **工具错误语义**：失败的 tool 消息携带 `error_code`（`tool_timeout` / `permission_denied` / `tool_unavailable` / `approval_rejected` / `tool_failed` / `tool_cancelled`）、`retryable` 与 `hint`，模型据此决定修正参数重试还是如实报告限制，而不是重复盲试。
 - **环境声明**：运行开始前打开 `ArtifactWorkspace`，把本次可用的附件（会话附件 + 显式附带）以资源清单写入 system prompt（只读、单资源 `APP_ENVIRONMENT_MAX_RESOURCE_BYTES` 上限），并发出 `environment_opened`。`platform_read_artifact` 在运行中只接受该清单内的资源；工作区之外的 artifact 即使属于同一用户也会被拒绝。执行暂停等待审批时环境保持打开，终态时关闭。
+- **Token 资源兜底**：`APP_EXECUTION_TOKEN_BUDGET`（默认 200000，0 关闭）限制单次执行累计 `usage.total_tokens`，Agent 可按 `execution.token_budget` 收紧但不能放宽。达到上限后不再发起模型调用、不执行本轮工具，有文本则 `incomplete`（`stop_reason=token_budget`），无文本则 `failed`；`resume` 可带 `extra_tokens` 追加额度。
 - **无进展检测**：同一工具 + 同一参数 + 相同结果的调用最多执行两次；第三次直接拒绝（`repeated_call`，不可重试）并以 `stop_reason=no_progress` 收尾，避免"重试同一个错误"和"完成后继续空转"消耗预算。
 - **工具幂等重放**：`tool_executions` 以 `(execution_id, tool_call_id)` 唯一标识一次调用；重放同一调用直接返回已记录的成功结果（`replayed=true`），不重复副作用。
 - **策略决策**：工具访问、审批要求、资源授权统一由 `app/core/policy.py` 的纯函数判定（`allow` / `require_approval` / `deny` + `code` + `reason`）。运行时、ToolService、Workflow 节点与 `PermissionService` 共用同一结论；审批与拒绝事件都带 `policy`，Agent 配置只能加严、不能降低平台风险下限。
@@ -263,7 +264,7 @@ npx vue-tsc --noEmit -p tsconfig.app.json
 npm run build
 ```
 
-当前结果：**225 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
+当前结果：**230 个后端测试通过**，前端类型检查与生产构建通过。测试不依赖真实模型、PostgreSQL、Redis 或 MinIO。
 
 ---
 
