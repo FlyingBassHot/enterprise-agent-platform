@@ -295,6 +295,18 @@ class RuntimeService:
             # into progress instead of an immediate second stop. The graph ended
             # on the agent node, so re-enter through "tools" to schedule it again.
             updates: dict[str, Any] = {"stop_reason": None, "final_output": None}
+            if self.task_gateway is not None:
+                try:
+                    fresh_plan = await self.task_gateway.steps_for_execution(execution_id)
+                except Exception:  # noqa: BLE001 - keep the checkpointed plan
+                    logger.exception(
+                        "failed to reload task plan", extra={"execution_id": execution_id}
+                    )
+                    fresh_plan = []
+                if fresh_plan:
+                    # Another execution of the same task may have advanced the
+                    # plan; resuming on a stale copy would later delete its steps.
+                    updates["plan"] = fresh_plan
             current_iterations = await self._current_iterations(graph, config, snapshot)
             if extra_iterations:
                 updates["max_iterations"] = min(

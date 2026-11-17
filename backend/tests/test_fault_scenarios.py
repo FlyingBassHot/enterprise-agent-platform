@@ -355,3 +355,57 @@ async def test_unauthorized_artifact_read_is_denied(
             {"artifact_id": upload.json()["id"]},
             ToolContext(user=viewer, tool_name="platform_read_artifact"),
         )
+
+
+async def test_replaying_a_failed_call_does_not_break_uniqueness(client, db) -> None:  # noqa: ARG001
+    name = f"fail_replay_{uuid.uuid4().hex[:8]}"
+    calls: list[str] = []
+
+    async def handler(arguments: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        calls.append("run")
+        raise RuntimeError("handler exploded")
+
+    native_registry.register(
+        ToolDescriptor(
+            name=name,
+            description="probe",
+            input_schema={"type": "object", "properties": {}},
+            risk_level="low",
+            timeout_seconds=5,
+        ),
+        handler,
+    )
+    try:
+        await ToolService(db).sync_native()
+        actor = UserContext(
+            user_id="u-fail-replay", username="tester", permissions={"tools:execute"}
+        )
+        invocation = ToolInvocation(
+            tool_name=name,
+            arguments={},
+            user_id=actor.user_id,
+            execution_id="exec-fail-replay",
+            tool_call_id="c1",
+        )
+        first = await ToolService(db).execute(invocation, actor)
+        second = await ToolService(db).execute(invocation, actor)
+
+        assert first.status == "failed"
+        assert second.status == "failed"
+        assert second.replayed is True
+        assert calls == ["run"]
+
+        # A reused id with different arguments must not insert a second row.
+        mismatched = invocation.model_copy(update={"arguments": {"value": 1}})
+        third = await ToolService(db).execute(mismatched, actor)
+        assert third.ok is False
+        assert "reused" in (third.error or "")
+        assert calls == ["run"]
+
+        # The session stays usable after these paths.
+        other = invocation.model_copy(update={"tool_call_id": "c2"})
+        fourth = await ToolService(db).execute(other, actor)
+        assert fourth.status == "failed"
+        assert calls == ["run", "run"]
+    finally:
+        native_registry.unregister(name)

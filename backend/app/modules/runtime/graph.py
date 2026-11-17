@@ -278,7 +278,7 @@ def build_agent_graph(
                 "steps": next_steps,
                 "error": None,
                 "pending_tool_calls": [],
-                "final_output": text or None,
+                "final_output": text or _last_assistant_text(messages),
                 "stop_reason": "token_budget",
                 "usage": usage,
             }
@@ -506,7 +506,10 @@ def build_agent_graph(
                 )
                 continue
 
-            if decision.get("repeated"):
+            signature = _tool_signature(name, arguments)
+            if decision.get("repeated") or (
+                signature == last_signature and repeat_streak >= 2
+            ):
                 no_progress = True
                 content = json.dumps(
                     tool_error_content(
@@ -656,7 +659,6 @@ def build_agent_graph(
                 content_obj = tool_error_content(
                     status, error=result_error, output=output, tool=name
                 )
-            signature = _tool_signature(name, arguments)
             digest = _result_digest(content_obj)
             if signature == last_signature and digest == last_digest:
                 repeat_streak += 1
@@ -783,6 +785,10 @@ def build_agent_graph(
             return END
         if state.get("pending_tool_calls"):
             return "tools"
+        if state.get("stop_reason") in {"max_iterations", "token_budget"}:
+            # A truncated answer is not a completion claim: keep the budget
+            # reason and do not spend a verification retry on it.
+            return END
         return "verify"
 
     def route_after_verify(state: AgentState) -> str:

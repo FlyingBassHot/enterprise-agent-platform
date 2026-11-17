@@ -188,8 +188,8 @@ Environment 回答"这次运行在什么环境里工作"，Tool 回答"能做什
 **不变量 I11**：Agent 配置只能增加审批要求，不能降低平台风险下限。
 **不变量 I12**：策略拒绝不执行工具、不产生副作用，并以结构化 `error_code` 回给模型。
 **不变量 I16**：同一轮内的 `tool_call_id` 必须唯一；重复 id 一律以 `invalid_call` 拒绝，不得覆盖已有裁决。
-**不变量 I13**：同一工具 + 同参数 + 同结果只允许执行两次；第三次不执行，以 `no_progress` 收尾。
-**不变量 I14**：同一 `(execution_id, tool_call_id)` 的成功结果只产生一次副作用，重放返回记录值。
+**不变量 I13**：同一工具 + 同参数 + 同结果只允许执行两次；第三次不执行，以 `no_progress` 收尾。该判定在**同一批多个 tool_call 内也逐次生效**。
+**不变量 I14**：同一 `(execution_id, tool_call_id)` 只产生一条执行记录；重放返回记录的结果（成功或失败），不重复副作用；主动重试必须使用新的 call id。
 **不变量 I15**：达到 token 上限后不再发起模型调用；Agent 配置只能收紧平台上限，不能放宽。
 
 ## 8. 观察与错误契约
@@ -227,6 +227,7 @@ Environment 回答"这次运行在什么环境里工作"，Tool 回答"能做什
 - 计划**持久化在 Task 上**（`task_steps` 表），不是 execution 的私有状态；同一 Task 的新执行可以直接续跑。
 - 仅 `platform_update_plan` 的返回值能更新计划；runtime 再次 `normalize_plan`（≤20 项，状态枚举固定），经 `TaskGateway` 落库后再注入。
 - 每轮作为**独立 system 消息**重注入，位于原 system 之后；本轮投影，不写入会话历史。
+- resume 前从 Task 重新加载计划：其它执行可能已推进步骤，沿用 checkpoint 里的旧计划会在下次 `apply_plan` 时删掉新步骤。
 - 步骤字段：稳定 `step_key`、`position`、`title`、`status`、`result`、`verified`。模型删掉的步骤从 Task 移除；`result/verified` 保留给 Verifier 写入。
 - 计划是建议，不是权限：不能绕过审批，不能扩大工具集。
 - 计划 ≠ Workflow：计划模型生成可动态调整；Workflow 是发布时固定的确定性流程。
@@ -244,6 +245,7 @@ Environment 回答"这次运行在什么环境里工作"，Tool 回答"能做什
 | 通过 | 执行收尾 `completed`；已 `done` 的步骤写 `verified=true` |
 | 不通过且还有重试 | 注入 `[系统校验]` 反馈消息（含 issue 列表）回 `agent` 重做；最多 `execution.verification.max_retries` 次（0–2，默认 1） |
 | 不通过且重试耗尽 | 保留答案，执行判 `incomplete`，`stop_reason=verification_failed`，issues 写入 `output_payload.verification` |
+| 预算停止 | `max_iterations` / `token_budget` 停止的运行**不进入校验**：被截断的答案不是完成声明，也不消耗校验重试 |
 | 关闭 | `execution.verification.enabled=false` 时校验状态为 `skipped` |
 
 Verifier 通过 `VerifierGateway` 注入，runtime 不 import 领域模块；实现位于
@@ -346,3 +348,4 @@ Verifier 通过 `VerifierGateway` 注入，runtime 不 import 领域模块；实
 | 2026-11-16 | 新增无进展检测与工具幂等重放；取消/崩溃路径先回滚事务再写终态，消除 SQLite 写锁等待 |
 | 2026-11-17 | 新增 token 资源兜底（平台上限 + Agent 只能降低）、`budget_exhausted` 事件与 `extra_tokens` 续跑 |
 | 2026-11-17 | 安全加固：重复 `tool_call_id` 拒绝、workflow agent 节点强制工具绑定、审计领域工具纳入 workspace 范围 |
+| 2026-11-17 | 逻辑修复（Loop Review）：失败结果按 call id 重放、批内逐次判定 no-progress、预算停止跳过校验并保留更早文本、resume 刷新 Task 计划 |

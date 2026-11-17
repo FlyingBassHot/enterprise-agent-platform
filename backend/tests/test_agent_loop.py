@@ -579,3 +579,145 @@ async def test_duplicate_call_ids_cannot_overwrite_a_rejection(checkpointer) -> 
         "approval_rejected",
         "invalid_call",
     }
+
+
+async def test_no_progress_applies_inside_one_batch(checkpointer) -> None:  # noqa: F811
+    sink = FakeSink()
+    tools = FakeTools([make_tool("echo", "low")])
+    model = FakeModel(
+        [
+            {
+                "tool_calls": [
+                    {"name": "echo", "arguments": {"value": "same"}},
+                    {"name": "echo", "arguments": {"value": "same"}},
+                    {"name": "echo", "arguments": {"value": "same"}},
+                ]
+            }
+        ]
+    )
+    runtime = RuntimeService(
+        model_gateway=model,
+        tool_gateway=tools,
+        sink=sink,
+        checkpointer=checkpointer,
+    )
+
+    result = await runtime.run(
+        execution_id="exec-batch-no-progress",
+        snapshot=make_snapshot(tool_names=["echo"], max_iterations=8),
+        user=USER,
+        user_text="loop",
+    )
+
+    assert len(tools.invocations) == 2
+    assert result.status == "failed"
+    assert result.output_payload["stop_reason"] == "no_progress"
+    assert "no_progress_detected" in sink.types()
+
+
+async def test_budget_stop_keeps_earlier_partial_answer(checkpointer) -> None:  # noqa: F811
+    sink = FakeSink()
+    tools = FakeTools([make_tool("echo", "low")])
+    model = FakeModel(
+        [
+            {
+                "content": "partial answer",
+                "tool_calls": [{"name": "echo", "arguments": {"n": 1}}],
+            },
+            {"tool_calls": [{"name": "echo", "arguments": {"n": 2}}]},
+            {"tool_calls": [{"name": "echo", "arguments": {"n": 3}}]},
+        ]
+    )
+    runtime = RuntimeService(
+        model_gateway=model,
+        tool_gateway=tools,
+        sink=sink,
+        checkpointer=checkpointer,
+    )
+
+    result = await runtime.run(
+        execution_id="exec-budget-partial-fallback",
+        snapshot=make_snapshot(tool_names=["echo"], token_budget=25),
+        user=USER,
+        user_text="go",
+    )
+
+    assert result.status == "incomplete"
+    assert result.output_text == "partial answer"
+    assert len(tools.invocations) == 2
+
+
+async def test_budget_stop_skips_verification(checkpointer) -> None:  # noqa: F811
+    class ExplodingVerifier:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def verify(self, **_: Any) -> Any:
+            self.calls += 1
+            raise AssertionError("verification must not run on a truncated answer")
+
+    verifier = ExplodingVerifier()
+    sink = FakeSink()
+    model = FakeModel([{"content": "partial"}])
+    runtime = RuntimeService(
+        model_gateway=model,
+        tool_gateway=FakeTools(),
+        sink=sink,
+        checkpointer=checkpointer,
+        verifier_gateway=verifier,
+    )
+
+    result = await runtime.run(
+        execution_id="exec-budget-no-verify",
+        snapshot=make_snapshot(token_budget=10),
+        user=USER,
+        user_text="go",
+    )
+
+    assert result.status == "incomplete"
+    assert result.output_payload["stop_reason"] == "token_budget"
+    assert verifier.calls == 0
+    assert "verification_started" not in sink.types()
+
+
+async def test_resume_refreshes_the_task_plan(checkpointer) -> None:  # noqa: F811
+    gateway = FakeTaskGateway([{"id": "1", "title": "旧步骤", "status": "pending"}])
+    sink = FakeSink()
+    model = FakeModel(
+        [
+            {"content": "partial", "tool_calls": [{"name": "echo", "arguments": {"n": 1}}]},
+            {"content": "done"},
+        ]
+    )
+    runtime = RuntimeService(
+        model_gateway=model,
+        tool_gateway=FakeTools([make_tool("echo", "low")]),
+        sink=sink,
+        checkpointer=checkpointer,
+        task_gateway=gateway,
+    )
+    snapshot = make_snapshot(tool_names=["echo"], token_budget=10)
+
+    first = await runtime.run(
+        execution_id="exec-plan-resume",
+        snapshot=snapshot,
+        user=USER,
+        user_text="go",
+    )
+    assert first.status == "incomplete"
+
+    gateway.steps = [{"id": "1", "title": "新步骤", "status": "pending"}]
+    second = await runtime.resume(
+        execution_id="exec-plan-resume",
+        user=USER,
+        snapshot=snapshot,
+        extra_tokens=100,
+    )
+
+    assert second.status == "completed"
+    second_turn = model.calls[1]["messages"]
+    plan_text = "\n".join(
+        message.content for message in second_turn if message.role == "system"
+    )
+    assert "新步骤" in plan_text
+    assert "旧步骤" not in plan_text

@@ -397,23 +397,35 @@ class ToolService(ToolGateway):
         masked = mask_arguments(arguments, tool.sensitive_fields or [])
 
         if execution_id and tool_call_id:
-            # A retried step must not repeat a side effect. Replay the recorded
-            # successful result instead of invoking the handler again.
+            # A retried step must not insert a second row for the same call id
+            # (the unique constraint would raise and poison the session), and a
+            # successful call must not repeat its side effect. Replay whatever
+            # outcome was recorded; a deliberate retry needs a new call id.
             replayed = await self.repo.get_execution_by_call(execution_id, tool_call_id)
-            if (
-                replayed is not None
-                and replayed.status == ToolExecutionStatus.SUCCESS.value
-                and replayed.tool_name == tool.name
-                and dict(replayed.arguments_masked or {}) == masked
-            ):
+            if replayed is not None:
+                if (
+                    replayed.tool_name == tool.name
+                    and dict(replayed.arguments_masked or {}) == masked
+                ):
+                    return ToolExecutionResult(
+                        ok=replayed.status == ToolExecutionStatus.SUCCESS.value,
+                        status=replayed.status,
+                        output=replayed.result,
+                        error=replayed.error,
+                        duration_ms=0,
+                        masked_arguments=masked,
+                        replayed=True,
+                    )
                 return ToolExecutionResult(
-                    ok=True,
-                    status=ToolExecutionStatus.SUCCESS.value,
-                    output=replayed.result,
-                    error=None,
+                    ok=False,
+                    status=ToolExecutionStatus.FAILED.value,
+                    output=None,
+                    error=(
+                        "tool_call_id reused with different tool or arguments: "
+                        f"{tool_call_id}"
+                    ),
                     duration_ms=0,
                     masked_arguments=masked,
-                    replayed=True,
                 )
 
         if enforce_scope:
