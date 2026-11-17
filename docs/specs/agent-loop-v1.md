@@ -187,6 +187,7 @@ Environment 回答"这次运行在什么环境里工作"，Tool 回答"能做什
 
 **不变量 I11**：Agent 配置只能增加审批要求，不能降低平台风险下限。
 **不变量 I12**：策略拒绝不执行工具、不产生副作用，并以结构化 `error_code` 回给模型。
+**不变量 I16**：同一轮内的 `tool_call_id` 必须唯一；重复 id 一律以 `invalid_call` 拒绝，不得覆盖已有裁决。
 **不变量 I13**：同一工具 + 同参数 + 同结果只允许执行两次；第三次不执行，以 `no_progress` 收尾。
 **不变量 I14**：同一 `(execution_id, tool_call_id)` 的成功结果只产生一次副作用，重放返回记录值。
 **不变量 I15**：达到 token 上限后不再发起模型调用；Agent 配置只能收紧平台上限，不能放宽。
@@ -344,3 +345,4 @@ Verifier 通过 `VerifierGateway` 注入，runtime 不 import 领域模块；实
 | 2026-11-16 | 策略收敛到 `app/core/policy.py`：工具访问/审批/资源授权共用 `PolicyDecision`，事件携带原因 |
 | 2026-11-16 | 新增无进展检测与工具幂等重放；取消/崩溃路径先回滚事务再写终态，消除 SQLite 写锁等待 |
 | 2026-11-17 | 新增 token 资源兜底（平台上限 + Agent 只能降低）、`budget_exhausted` 事件与 `extra_tokens` 续跑 |
+| 2026-11-17 | 安全加固：重复 `tool_call_id` 拒绝、workflow agent 节点强制工具绑定、审计领域工具纳入 workspace 范围 |
