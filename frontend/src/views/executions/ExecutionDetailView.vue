@@ -117,6 +117,26 @@ const verification = computed<{
   }) : null
 })
 
+const stopReason = computed(() => {
+  const payload = detail.value?.output_payload as Record<string, unknown> | null | undefined
+  return typeof payload?.stop_reason === 'string' ? payload.stop_reason : ''
+})
+
+const stopReasonLabel = computed(() => {
+  switch (stopReason.value) {
+    case 'max_iterations':
+      return '达到迭代上限，可继续执行以追加步数'
+    case 'token_budget':
+      return '达到 Token 预算上限（资源兜底），可继续执行以追加额度'
+    case 'no_progress':
+      return '检测到重复且无新信息的工具调用，已停止'
+    case 'verification_failed':
+      return '完成校验未通过，需人工复核后继续'
+    default:
+      return ''
+  }
+})
+
 const usage = computed<Record<string, number>>(() => detail.value?.token_usage || {})
 
 const durationMs = computed(() => {
@@ -549,6 +569,15 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
+        <el-alert
+          v-if="stopReasonLabel"
+          class="stop-reason"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="stopReasonLabel"
+        />
+
         <div
           v-if="verification && verification.status === 'failed'"
           class="verify-block"
@@ -866,6 +895,10 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.stop-reason {
+  margin-top: 16px;
 }
 
 .verify-block {

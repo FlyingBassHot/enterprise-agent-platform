@@ -295,15 +295,21 @@ class RuntimeService:
             # into progress instead of an immediate second stop. The graph ended
             # on the agent node, so re-enter through "tools" to schedule it again.
             updates: dict[str, Any] = {"stop_reason": None, "final_output": None}
+            current_iterations = await self._current_iterations(graph, config, snapshot)
             if extra_iterations:
-                current = await self._current_iterations(graph, config, snapshot)
-                updates["max_iterations"] = min(200, current + max(1, int(extra_iterations)))
+                updates["max_iterations"] = min(
+                    200, current_iterations + max(1, int(extra_iterations))
+                )
             if extra_tokens:
                 current_tokens = await self._current_token_budget(graph, config, snapshot)
                 updates["token_budget"] = current_tokens + max(1, int(extra_tokens))
             await graph.aupdate_state(config, updates, as_node="tools")
+            # Raise the graph recursion limit to whichever budget is now in
+            # force; otherwise a resumed long run dies on the old limit.
             config = self._config(
-                execution_id, snapshot, iterations=updates.get("max_iterations")
+                execution_id,
+                snapshot,
+                iterations=updates.get("max_iterations") or current_iterations,
             )
         if decision is None and interrupt_id is None:
             graph_input: Any = None
