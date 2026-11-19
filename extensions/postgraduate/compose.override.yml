@@ -1,0 +1,29 @@
+# Use with the ORIGINAL compose file; does not edit or replace it.
+# From project root:
+# docker compose -f docker-compose.yml -f extensions/postgraduate/compose.override.yml up -d backend
+services:
+  opencode-go-adapter:
+    image: enterprise-agent-platform-backend:latest
+    entrypoint: ["/app/.venv/bin/python", "/adapter/model_adapter.py"]
+    volumes:
+      - ./extensions/postgraduate/model_adapter.py:/adapter/model_adapter.py:ro
+    expose:
+      - "8011"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8011/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+  backend:
+    depends_on:
+      opencode-go-adapter:
+        condition: service_healthy
+    environment:
+      # Upgrade the framework without re-seeding existing Agent configurations.
+      APP_SEED_DEMO: "false"
+    volumes:
+      - ./extensions/postgraduate:/app/extensions/postgraduate:ro
+      - postgraduate-data:/postgraduate-data
+volumes:
+  postgraduate-data:

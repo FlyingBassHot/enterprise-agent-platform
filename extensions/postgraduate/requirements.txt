@@ -1,0 +1,2 @@
+# Already present in the platform; independent deployments can use their own venv.
+mcp==2.3.0

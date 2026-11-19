@@ -1,0 +1,4 @@
+# Optional documents MCP dependencies; already in the current platform runtime.
+-r requirements.txt
+pypdf==7.1.0
+python-docx==1.2.0

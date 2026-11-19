@@ -1,0 +1,11 @@
+{
+  "postgrad-research": {
+    "POSTGRAD_PUBLIC_HOSTS": ""
+  },
+  "postgrad-notification": {
+    "POSTGRAD_NOTIFICATION_DRY_RUN": "1",
+    "POSTGRAD_EMAIL_ALLOWLIST": "",
+    "POSTGRAD_WECOM_ALLOWLIST": "",
+    "POSTGRAD_NOTIFICATION_RATE_LIMIT_PER_HOUR": "20"
+  }
+}

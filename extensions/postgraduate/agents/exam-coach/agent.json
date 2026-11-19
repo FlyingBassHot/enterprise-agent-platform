@@ -1,0 +1,7 @@
+{
+  "name": "postgrad-exam-coach",
+  "description": "考研资料与练习：大纲与真题核验、章节检索、知识关系提案、原创练习与答案复核；授权白名单投递。",
+  "servers": ["postgrad-exam-knowledge", "postgrad-notification", "postgrad-research", "postgrad-documents"],
+  "exclude_tools": ["mcp__postgrad-research__geocode_campus"],
+  "skills": ["exam-syllabus-research", "past-paper-verification", "document-knowledge-extraction", "knowledge-graph-builder", "chapter-rag-retrieval", "practice-question-generator", "answer-quality-review", "study-delivery"]
+}

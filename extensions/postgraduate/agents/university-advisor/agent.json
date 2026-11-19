@@ -1,0 +1,7 @@
+{
+  "name": "postgrad-university-advisor",
+  "description": "考研院校推荐：核验招生来源、区分历史分数线口径、按专业年份与校区匹配；无合格模型不输出录取概率。",
+  "servers": ["postgrad-university-data", "postgrad-admission-ml", "postgrad-research", "postgrad-documents"],
+  "exclude_tools": ["mcp__postgrad-documents__export_docx"],
+  "skills": ["university-research", "admission-extraction", "source-verification", "geo-analysis", "admission-risk-analysis", "school-recommendation"]
+}
