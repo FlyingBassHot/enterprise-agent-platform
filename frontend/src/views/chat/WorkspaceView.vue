@@ -1,36 +1,39 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Link, Plus, Promotion, Refresh, Upload } from '@element-plus/icons-vue'
+import { ArrowLeft, Link, Promotion, Refresh, Upload } from '@element-plus/icons-vue'
 import MessageBubble from '@/components/MessageBubble.vue'
 import ToolCallCard from '@/components/ToolCallCard.vue'
 import ApprovalDialog from '@/components/ApprovalDialog.vue'
 import KnowledgeCitations from '@/components/KnowledgeCitations.vue'
+import WorkspaceRootSidebar from '@/components/WorkspaceRootSidebar.vue'
+import WorkspaceFilePreview from '@/components/WorkspaceFilePreview.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import {
-  agentsApi,
   approvalsApi,
   artifactsApi,
-  conversationsApi,
   executionsApi,
+  workspaceApi,
 } from '@/api/platform'
 import { useExecutionStream, type ExecutionEventDto } from '@/composables/useExecutionStream'
 import { useAuthStore } from '@/stores/auth'
 import type {
-  AgentInfo,
   ApprovalInfo,
   ArtifactInfo,
   ConversationInfo,
   ExecutionDetail,
   ExecutionInfo,
+  FileRootAccess,
+  FileRootEntry,
+  WorkspaceAgentInfo,
 } from '@/types/api'
 import {
   mergeKnowledgeCitations,
   parseKnowledgeCitations,
   type KnowledgeCitation,
 } from '@/components/knowledgeCitations'
-import { formatBytes, formatDate, shortId } from '@/utils/format'
+import { formatBytes, formatDate } from '@/utils/format'
 
 interface ChatMessage {
   id: string
@@ -64,10 +67,13 @@ interface LiveApproval {
 
 const ACTIVE_STATUSES = ['pending', 'running', 'waiting_approval']
 
+const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
-const agents = ref<AgentInfo[]>([])
+const agentId = computed(() => String(route.params.agentId || ''))
+
+const agents = ref<WorkspaceAgentInfo[]>([])
 const agentsLoading = ref(false)
 const agentsError = ref('')
 
@@ -75,10 +81,21 @@ const conversations = ref<ConversationInfo[]>([])
 const conversationsLoading = ref(false)
 const conversationsError = ref('')
 
+const fileRoots = ref<FileRootAccess[]>([])
+const fileRootsLoading = ref(false)
+const fileRootsError = ref('')
+
+const activeRootId = ref<string | null>(null)
+const pendingRootId = ref<string | null>(null)
+const previewFile = ref<{
+  rootId: string
+  rootName: string
+  entry: FileRootEntry
+} | null>(null)
+
 const messages = ref<ChatMessage[]>([])
 const messagesLoading = ref(false)
 const selectedConversationId = ref('')
-const selectedAgentId = ref('')
 
 const draft = ref('')
 const attachments = ref<ArtifactInfo[]>([])
@@ -100,22 +117,44 @@ const streamSeq = ref(0)
 const assistantDraftId = ref('')
 const chatScroll = ref<HTMLElement | null>(null)
 let messagesToken = 0
+let agentsToken = 0
 let appliedSeq = 0
 
 const {
-  events: streamEvents,
   connected,
   error: streamError,
   start: startStream,
   stop: stopStream,
 } = useExecutionStream({ onEvent: handleStreamEvent })
 
-const publishedAgents = computed(() => agents.value.filter((item) => item.status === 'published'))
-
-const agentMap = computed(() => new Map(agents.value.map((item) => [item.id, item])))
-
 const selectedAgent = computed(
-  () => publishedAgents.value.find((item) => item.id === selectedAgentId.value) || null,
+  () => agents.value.find((item) => item.id === agentId.value) || null,
+)
+
+const agentUnavailable = computed(() => !agentsLoading.value && !selectedAgent.value)
+
+const activeRoot = computed(
+  () => fileRoots.value.find((item) => item.id === activeRootId.value) || null,
+)
+
+const activeRootName = computed(
+  () => activeRoot.value?.name || (activeRootId.value ? '其他会话' : '未归档工作区'),
+)
+
+const rootUnavailable = computed(
+  () => activeRootId.value !== null && !activeRoot.value && !selectedConversationId.value,
+)
+
+const currentRootId = computed(() => pendingRootId.value ?? activeRootId.value)
+
+const recentSessions = computed(() =>
+  [...conversations.value]
+    .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))
+    .slice(0, 8),
+)
+
+const pendingApprovals = computed(() =>
+  liveApprovals.value.filter((item) => item.status === 'pending'),
 )
 
 const selectedConversation = computed(
@@ -125,7 +164,7 @@ const selectedConversation = computed(
 const conversationAgentMismatch = computed(() => {
   const conversation = selectedConversation.value
   if (!conversation) return false
-  return conversation.agent_id !== selectedAgentId.value
+  return conversation.agent_id !== agentId.value
 })
 
 const status = computed(
@@ -142,14 +181,6 @@ const canDecide = computed(() => {
 
 const canCancel = computed(() => auth.has('executions:write') && isActive.value)
 
-const usage = computed<Record<string, number>>(
-  () => executionDetail.value?.token_usage || execution.value?.token_usage || {},
-)
-
-const eventCount = computed(() =>
-  executionDetail.value ? executionDetail.value.events_count : streamEvents.value.length,
-)
-
 const dialogApproval = computed(() => {
   const approval = liveApprovals.value.find((item) => item.status === 'pending')
   if (!approval) return null
@@ -165,6 +196,7 @@ const dialogApproval = computed(() => {
 const canSend = computed(
   () =>
     Boolean(selectedAgent.value) &&
+    !rootUnavailable.value &&
     !sending.value &&
     !isActive.value &&
     !uploading.value &&
@@ -172,7 +204,9 @@ const canSend = computed(
     draft.value.trim().length > 0,
 )
 
-const composerDisabled = computed(() => !selectedAgent.value || isActive.value || sending.value)
+const composerDisabled = computed(
+  () => !selectedAgent.value || rootUnavailable.value || isActive.value || sending.value,
+)
 
 function describeError(value: unknown): string {
   if (typeof value === 'object' && value !== null && 'response' in value) {
@@ -182,21 +216,12 @@ function describeError(value: unknown): string {
   return value instanceof Error ? value.message : '请求失败'
 }
 
-function agentName(id?: string | null): string {
-  if (!id) return '-'
-  return agentMap.value.get(id)?.name || shortId(id)
-}
-
-function tokenTotal(source?: Record<string, number> | null): number {
-  if (!source) return 0
-  if (typeof source.total_tokens === 'number') return source.total_tokens
-  return (source.prompt_tokens || 0) + (source.completion_tokens || 0)
-}
-
-function approvalLabel(value: string): string {
-  if (value === 'approved') return '已批准'
-  if (value === 'rejected') return '已拒绝'
-  return '待审批'
+function errorStatus(value: unknown): number | null {
+  if (typeof value === 'object' && value !== null && 'response' in value) {
+    const status = (value as { response?: { status?: number } }).response?.status
+    return typeof status === 'number' ? status : null
+  }
+  return null
 }
 
 function usageFrom(value: unknown): Record<string, number> {
@@ -211,39 +236,84 @@ function usageFrom(value: unknown): Record<string, number> {
 }
 
 async function loadAgents() {
+  const token = ++agentsToken
   agentsLoading.value = true
   agentsError.value = ''
   try {
-    agents.value = await agentsApi.list()
-    if (!publishedAgents.value.some((item) => item.id === selectedAgentId.value)) {
-      selectedAgentId.value = publishedAgents.value[0]?.id || ''
-    }
+    const list = await workspaceApi.agents()
+    if (token !== agentsToken) return
+    agents.value = list.filter((item) => item.status === 'published')
   } catch (err) {
+    if (token !== agentsToken) return
     agentsError.value = describeError(err)
+    const status = errorStatus(err)
+    if (status === 401 || status === 403) agents.value = []
   } finally {
-    agentsLoading.value = false
+    if (token === agentsToken) agentsLoading.value = false
   }
 }
 
 async function loadConversations() {
+  const currentAgentId = agentId.value
+  if (!currentAgentId) {
+    conversations.value = []
+    return
+  }
   conversationsLoading.value = true
   conversationsError.value = ''
   try {
-    conversations.value = await conversationsApi.list()
+    const list = await workspaceApi.conversations(currentAgentId, { limit: 100 })
+    if (currentAgentId !== agentId.value) return
+    conversations.value = list.filter((item) => item.agent_id === currentAgentId)
   } catch (err) {
-    conversationsError.value = describeError(err)
+    if (currentAgentId === agentId.value) {
+      conversations.value = []
+      conversationsError.value = describeError(err)
+    }
   } finally {
-    conversationsLoading.value = false
+    if (currentAgentId === agentId.value) conversationsLoading.value = false
   }
+}
+
+async function loadFileRoots() {
+  const currentAgentId = agentId.value
+  if (!currentAgentId) {
+    fileRoots.value = []
+    return
+  }
+  fileRootsLoading.value = true
+  fileRootsError.value = ''
+  try {
+    const list = await workspaceApi.fileRoots(currentAgentId)
+    if (currentAgentId === agentId.value) fileRoots.value = list
+  } catch (err) {
+    if (currentAgentId === agentId.value) {
+      fileRoots.value = []
+      fileRootsError.value = describeError(err)
+    }
+  } finally {
+    if (currentAgentId === agentId.value) fileRootsLoading.value = false
+  }
+}
+
+async function loadWorkspaceSide() {
+  await loadFileRoots()
 }
 
 async function loadMessages(conversationId: string) {
   const token = ++messagesToken
+  const currentAgentId = agentId.value
   messagesLoading.value = true
   chatError.value = ''
   try {
-    const list = await conversationsApi.messages(conversationId)
-    if (token !== messagesToken || selectedConversationId.value !== conversationId) return
+    const list = await workspaceApi.messages(currentAgentId, conversationId)
+    if (
+      token !== messagesToken ||
+      selectedConversationId.value !== conversationId ||
+      currentAgentId !== agentId.value
+    ) {
+      return
+    }
     messages.value = list.map((item) => ({
       id: item.id,
       role: item.role,
@@ -268,31 +338,15 @@ function resetLiveState() {
   streamSeq.value = 0
 }
 
-async function selectConversation(conversation: ConversationInfo) {
-  if (isActive.value || sending.value) {
-    ElMessage.warning('当前执行仍在进行，请等待结束或先取消执行')
-    return
-  }
-  selectedConversationId.value = conversation.id
-  messagesToken += 1
-  draft.value = ''
-  attachments.value = []
-  execution.value = null
-  executionDetail.value = null
-  liveStatus.value = ''
-  resetLiveState()
-  chatError.value = ''
-  stopStream()
-  const published = publishedAgents.value.find((item) => item.id === conversation.agent_id)
-  if (published) selectedAgentId.value = published.id
-  await loadMessages(conversation.id)
+function navigateSession(conversationId?: string) {
+  const base = `/workspaces/${agentId.value}`
+  const target = conversationId ? `${base}/chat/${conversationId}` : base
+  const current = String(route.params.sessionId || '')
+  if (current === (conversationId || '')) return
+  void router.push(target)
 }
 
-function newChat() {
-  if (isActive.value || sending.value) {
-    ElMessage.warning('当前执行仍在进行，请等待结束或先取消执行')
-    return
-  }
+function clearChatState() {
   stopStream()
   selectedConversationId.value = ''
   messagesToken += 1
@@ -305,6 +359,184 @@ function newChat() {
   liveStatus.value = ''
   chatError.value = ''
   resetLiveState()
+}
+
+const LAST_SESSION_PREFIX = 'workspace_last_session'
+
+function lastSessionKey(): string {
+  return `${LAST_SESSION_PREFIX}:${auth.user?.id || 'anon'}:${agentId.value}`
+}
+
+function rememberSession(conversationId: string) {
+  if (!conversationId || !agentId.value) return
+  try {
+    localStorage.setItem(lastSessionKey(), conversationId)
+  } catch {
+    // Storage may be unavailable; restoring the last session is best-effort.
+  }
+}
+
+function forgetSession() {
+  try {
+    localStorage.removeItem(lastSessionKey())
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+async function restoreLastSession() {
+  if (isActive.value || sending.value) return
+  if (route.params.sessionId || selectedConversationId.value) return
+  let stored = ''
+  try {
+    stored = localStorage.getItem(lastSessionKey()) || ''
+  } catch {
+    return
+  }
+  if (!stored) return
+  const requestedAgentId = agentId.value
+  const known = conversations.value.find(
+    (item) => item.id === stored && item.agent_id === requestedAgentId,
+  )
+  if (known) {
+    await selectConversation(known)
+    return
+  }
+  try {
+    const conversation = await workspaceApi.conversation(requestedAgentId, stored)
+    if (requestedAgentId !== agentId.value || route.params.sessionId) return
+    if (conversation.agent_id !== requestedAgentId) {
+      forgetSession()
+      return
+    }
+    conversations.value = [
+      conversation,
+      ...conversations.value.filter((item) => item.id !== conversation.id),
+    ]
+    await selectConversation(conversation)
+  } catch (err) {
+    // Only a confirmed missing session clears the preference; network
+    // failures keep it for the next visit.
+    if (errorStatus(err) === 404 && requestedAgentId === agentId.value) {
+      forgetSession()
+    }
+  }
+}
+
+async function selectConversation(conversation: ConversationInfo, syncRoute = true) {
+  if (conversation.agent_id !== agentId.value) {
+    ElMessage.warning('该对话不属于当前 Agent，已忽略')
+    return
+  }
+  if (isActive.value || sending.value) {
+    ElMessage.warning('当前执行仍在进行，请等待结束或先取消执行')
+    return
+  }
+  selectedConversationId.value = conversation.id
+  activeRootId.value = conversation.root_id
+  pendingRootId.value = null
+  previewFile.value = null
+  rememberSession(conversation.id)
+  messagesToken += 1
+  draft.value = ''
+  attachments.value = []
+  execution.value = null
+  executionDetail.value = null
+  liveStatus.value = ''
+  resetLiveState()
+  chatError.value = ''
+  stopStream()
+  if (syncRoute) navigateSession(conversation.id)
+  await loadMessages(conversation.id)
+}
+
+function newChat(rootId: string | null = null) {
+  if (isActive.value || sending.value) {
+    ElMessage.warning('当前执行仍在进行，请等待结束或先取消执行')
+    return
+  }
+  activeRootId.value = rootId
+  pendingRootId.value = rootId
+  previewFile.value = null
+  forgetSession()
+  clearChatState()
+  navigateSession()
+}
+
+function selectRoot(rootId: string | null) {
+  if (isActive.value || sending.value) return
+  activeRootId.value = rootId
+  pendingRootId.value = rootId
+  previewFile.value = null
+  if (selectedConversationId.value) {
+    clearChatState()
+    navigateSession()
+  }
+}
+
+function selectFile(payload: {
+  rootId: string
+  rootName: string
+  entry: FileRootEntry
+}) {
+  previewFile.value = payload
+}
+
+function rootLabel(rootId: string | null): string {
+  if (!rootId) return '未归档'
+  return fileRoots.value.find((root) => root.id === rootId)?.name || '已撤销工作区'
+}
+
+async function refreshWorkspace() {
+  await Promise.all([loadConversations(), loadFileRoots()])
+}
+
+async function applyRouteSession() {
+  if (isActive.value || sending.value) return
+  const sessionId = String(route.params.sessionId || '')
+  if (!sessionId) {
+    if (selectedConversationId.value) clearChatState()
+    return
+  }
+  if (sessionId === selectedConversationId.value) return
+  if (!agentId.value || !selectedAgent.value) return
+
+  const requestedAgentId = agentId.value
+  const known = conversations.value.find(
+    (item) => item.id === sessionId && item.agent_id === requestedAgentId,
+  )
+  if (known) {
+    await selectConversation(known, false)
+    return
+  }
+
+  try {
+    const conversation = await workspaceApi.conversation(requestedAgentId, sessionId)
+    if (
+      requestedAgentId !== agentId.value ||
+      String(route.params.sessionId || '') !== sessionId
+    ) {
+      return
+    }
+    if (conversation.agent_id !== requestedAgentId) {
+      throw new Error('该会话不属于当前 Agent')
+    }
+    conversations.value = [
+      conversation,
+      ...conversations.value.filter((item) => item.id !== conversation.id),
+    ]
+    await selectConversation(conversation, false)
+  } catch (err) {
+    if (
+      requestedAgentId !== agentId.value ||
+      String(route.params.sessionId || '') !== sessionId
+    ) {
+      return
+    }
+    clearChatState()
+    chatError.value = describeError(err)
+    void router.replace(`/workspaces/${requestedAgentId}`)
+  }
 }
 
 function seedApprovals(approvals: ApprovalInfo[]) {
@@ -553,6 +785,13 @@ function reconnectStream() {
 
 async function send() {
   if (!canSend.value || !selectedAgent.value) return
+  const requestAgentId = agentId.value
+  const requestConversationId = selectedConversationId.value
+  const requestRootId = requestConversationId
+    ? fileRoots.value.some((root) => root.id === activeRootId.value)
+      ? activeRootId.value
+      : null
+    : currentRootId.value
   chatError.value = ''
   const text = draft.value.trim()
   const uploaded = [...attachments.value]
@@ -575,23 +814,35 @@ async function send() {
   resetLiveState()
   try {
     const created = await executionsApi.create({
-      agent_id: selectedAgent.value.id,
+      agent_id: requestAgentId,
+      root_id: requestRootId || null,
       input: text,
-      conversation_id: selectedConversationId.value || null,
+      conversation_id: requestConversationId || null,
       artifact_ids: artifactIds,
     })
+    if (requestAgentId !== agentId.value) return
     execution.value = created
     executionDetail.value = null
     liveStatus.value = created.status
-    if (created.conversation_id) selectedConversationId.value = created.conversation_id
+    pendingRootId.value = null
+    if (created.conversation_id) {
+      selectedConversationId.value = created.conversation_id
+      activeRootId.value = requestRootId
+      rememberSession(created.conversation_id)
+      if (String(route.params.sessionId || '') !== created.conversation_id) {
+        void router.replace(`/workspaces/${requestAgentId}/chat/${created.conversation_id}`)
+      }
+    }
     stopStream()
     startStream(created.id, 0)
     void loadConversations()
   } catch (err) {
-    messages.value = messages.value.filter((item) => item.id !== optimistic.id)
-    draft.value = text
-    attachments.value = uploaded
-    chatError.value = describeError(err)
+    if (requestAgentId === agentId.value) {
+      messages.value = messages.value.filter((item) => item.id !== optimistic.id)
+      draft.value = text
+      attachments.value = uploaded
+      chatError.value = describeError(err)
+    }
   } finally {
     sending.value = false
   }
@@ -677,8 +928,8 @@ function openDetail() {
   if (execution.value) void router.push(`/executions/${execution.value.id}`)
 }
 
-function openAgentManagement() {
-  void router.push('/agents')
+function backToWorkspaces() {
+  void router.push('/workspaces')
 }
 
 const totalContentLength = computed(() =>
@@ -691,98 +942,126 @@ watch([() => messages.value.length, totalContentLength], async () => {
   if (element) element.scrollTop = element.scrollHeight
 })
 
+watch(
+  () => route.params.agentId,
+  async (next, previous) => {
+    if (!next || next === previous) return
+    clearChatState()
+    conversations.value = []
+    conversationsError.value = ''
+    fileRoots.value = []
+    fileRootsError.value = ''
+    activeRootId.value = null
+    pendingRootId.value = null
+    previewFile.value = null
+    await loadAgents()
+    if (selectedAgent.value) {
+      await loadConversations()
+      loadWorkspaceSide()
+    }
+    await applyRouteSession()
+    await restoreLastSession()
+  },
+)
+
+watch(
+  () => route.params.sessionId,
+  async (next) => {
+    const sessionId = String(next || '')
+    if (sessionId === selectedConversationId.value) return
+    await applyRouteSession()
+  },
+)
+
 onMounted(async () => {
-  await Promise.all([loadAgents(), loadConversations()])
+  await loadAgents()
+  if (selectedAgent.value) {
+    await loadConversations()
+    loadWorkspaceSide()
+  }
+  await applyRouteSession()
+  await restoreLastSession()
 })
 </script>
 
 <template>
   <div class="workspace-page">
+    <header class="immersive-bar">
+      <el-button class="exit-btn" text @click="backToWorkspaces">
+        <el-icon><ArrowLeft /></el-icon>
+        退出工作区
+      </el-button>
+      <div class="immersive-identity">
+        <span class="agent-name">{{ selectedAgent?.name || 'Agent 不可用' }}</span>
+        <StatusTag v-if="selectedAgent" :status="selectedAgent.status" />
+        <span class="workspace-chip">
+          {{ previewFile ? previewFile.rootName : activeRootName }}
+        </span>
+        <StatusTag v-if="status" :status="status" />
+      </div>
+      <div class="immersive-actions">
+        <el-button
+          v-if="pendingApprovals.length"
+          size="small"
+          type="warning"
+          plain
+          @click="approvalDialogVisible = true"
+        >
+          待审批 {{ pendingApprovals.length }}
+        </el-button>
+        <el-button
+          v-if="canCancel"
+          link
+          type="danger"
+          :loading="cancelLoading"
+          @click="cancelExecution"
+        >
+          取消执行
+        </el-button>
+        <el-button v-if="execution" link type="primary" @click="openDetail">
+          <el-icon><Link /></el-icon>
+          执行详情
+        </el-button>
+        <el-button
+          :icon="Refresh"
+          circle
+          size="small"
+          :loading="conversationsLoading || fileRootsLoading"
+          title="刷新工作区"
+          @click="refreshWorkspace"
+        />
+      </div>
+    </header>
+
     <div class="workspace">
-      <aside class="pane conversations-pane">
-        <div class="pane-head">
-          <div>
-            <div class="pane-title">对话</div>
-            <div class="pane-sub">{{ conversations.length }} 个会话</div>
-          </div>
-          <div class="pane-actions">
-            <el-button
-              circle
-              size="small"
-              :loading="conversationsLoading"
-              title="刷新对话"
-              @click="loadConversations"
-            >
-              <el-icon><Refresh /></el-icon>
-            </el-button>
-            <el-button circle size="small" title="新建对话" @click="newChat">
-              <el-icon><Plus /></el-icon>
-            </el-button>
-          </div>
-        </div>
-        <div class="pane-body conversation-list">
-          <el-skeleton v-if="conversationsLoading && !conversations.length" :rows="4" animated />
-          <el-alert
-            v-if="conversationsError"
-            type="error"
-            :closable="false"
-            show-icon
-            :title="conversationsError"
-          />
-          <div
-            v-for="conversation in conversations"
-            :key="conversation.id"
-            class="conversation-item"
-            :class="{ active: conversation.id === selectedConversationId }"
-            @click="selectConversation(conversation)"
-          >
-            <div class="conversation-title">
-              {{ conversation.title || '未命名对话' }}
-            </div>
-            <div class="conversation-meta">
-              <span>{{ agentName(conversation.agent_id) }}</span>
-              <span>{{ formatDate(conversation.updated_at) }}</span>
-            </div>
-          </div>
-          <div v-if="!conversationsLoading && !conversations.length" class="empty-hint">
-            还没有对话，发送第一条消息即可自动创建。
-          </div>
-        </div>
+      <aside class="workspace-left">
+        <WorkspaceRootSidebar
+          :agent-id="agentId"
+          :roots="fileRoots"
+          :sessions="conversations"
+          :active-root-id="activeRootId"
+          :active-session-id="selectedConversationId"
+          :loading-sessions="conversationsLoading"
+          @select-root="selectRoot"
+          @new-session="newChat"
+          @select-session="selectConversation"
+          @select-file="selectFile"
+          @refresh="refreshWorkspace"
+        />
+        <div v-if="fileRootsError" class="side-error">{{ fileRootsError }}</div>
+        <div v-if="conversationsError" class="side-error">{{ conversationsError }}</div>
       </aside>
 
       <section class="pane chat-pane">
         <div class="chat-head">
-          <div class="agent-picker">
-            <el-select
-              v-model="selectedAgentId"
-              :disabled="isActive"
-              filterable
-              placeholder="选择已发布的 Agent"
-              class="agent-select"
-            >
-              <el-option
-                v-for="agent in publishedAgents"
-                :key="agent.id"
-                :label="agent.name"
-                :value="agent.id"
-              >
-                <span>{{ agent.name }}</span>
-                <span class="option-version">v{{ agent.current_version ?? '-' }}</span>
-              </el-option>
-            </el-select>
-            <span v-if="selectedAgent" class="agent-desc">
-              {{ selectedAgent.description || '已发布 Agent' }}
+          <div class="chat-title">
+            <span class="session-title">
+              {{ selectedConversation?.title || (pendingRootId ? `${activeRootName} · 新会话` : '新会话') }}
             </span>
+            <span class="session-sub">{{ activeRootName }} · {{ selectedAgent?.name || 'Agent' }}</span>
           </div>
           <div class="chat-head-right">
             <StatusTag v-if="status" :status="status" />
-            <el-button v-if="canCancel" link type="danger" :loading="cancelLoading" @click="cancelExecution">
-              取消执行
-            </el-button>
-            <el-button v-if="execution" link type="primary" @click="openDetail">
-              <el-icon><Link /></el-icon>
-              执行详情
-            </el-button>
           </div>
         </div>
 
@@ -811,21 +1090,29 @@ onMounted(async () => {
         </el-alert>
 
         <div ref="chatScroll" v-loading="messagesLoading" class="chat-scroll">
-          <div v-if="!publishedAgents.length && !agentsLoading" class="empty-agents">
-            <el-empty description="暂无已发布的 Agent，无法发起对话">
-              <el-button v-if="auth.has('agents:read')" type="primary" @click="openAgentManagement">
-                前往 Agent 管理
-              </el-button>
+          <div v-if="agentUnavailable" class="empty-agents">
+            <el-empty
+              :description="
+                agentsError || '该 Agent 不存在、已停用或当前账号无权访问'
+              "
+            >
+              <el-button type="primary" @click="backToWorkspaces">返回 Agent 选择</el-button>
             </el-empty>
           </div>
 
           <template v-else>
             <div v-if="!messages.length && !isActive" class="empty-conversation">
               <div class="empty-title">
-                {{ selectedAgent ? `与 ${selectedAgent.name} 开始对话` : '选择 Agent 开始对话' }}
+                {{
+                  selectedAgent
+                    ? `与 ${selectedAgent.name} 开始对话`
+                    : agentsLoading
+                      ? '正在加载 Agent'
+                      : 'Agent 不可用'
+                }}
               </div>
               <div class="empty-sub">
-                输入任务描述，Agent 会调用工具执行并在右侧展示实时状态。
+                左侧按文件根目录划分工作区；发送消息即可在当前工作区创建会话。
               </div>
             </div>
 
@@ -918,7 +1205,8 @@ onMounted(async () => {
                 附件
               </el-button>
               <span class="hint">
-                <template v-if="conversationAgentMismatch">当前对话属于其他 Agent，请新建对话</template>
+                <template v-if="rootUnavailable">当前工作区已不可用，请选择其他工作区</template>
+                <template v-else-if="conversationAgentMismatch">当前对话属于其他 Agent，请新建对话</template>
                 <template v-else-if="isActive">执行进行中，结束后可继续发送</template>
                 <template v-else>Enter 发送 · Shift+Enter 换行</template>
               </span>
@@ -931,107 +1219,51 @@ onMounted(async () => {
         </div>
       </section>
 
-      <aside class="pane live-pane">
-        <div class="pane-head">
-          <div>
-            <div class="pane-title">实时执行</div>
-            <div class="pane-sub">
-              <span class="state-dot" :class="{ live: connected, err: Boolean(streamError) }" />
-              {{ connected ? '事件流已连接' : isActive ? '事件流连接中' : '空闲' }}
+      <aside class="workspace-right">
+        <WorkspaceFilePreview
+          v-if="previewFile"
+          :agent-id="agentId"
+          :root-id="previewFile.rootId"
+          :root-name="previewFile.rootName"
+          :file="previewFile.entry"
+          @close="previewFile = null"
+        />
+
+        <template v-else>
+          <div class="right-head">
+            <div>
+              <div class="right-title">最近会话</div>
+              <div class="right-sub">{{ activeRootName }} · {{ selectedAgent?.name || 'Agent' }}</div>
             </div>
+            <el-button
+              link
+              size="small"
+              :icon="Refresh"
+              :loading="conversationsLoading"
+              title="刷新会话"
+              @click="refreshWorkspace"
+            />
           </div>
-        </div>
-        <div class="pane-body live-body">
-          <div v-if="!execution" class="empty-hint">尚未发起执行。</div>
-          <template v-else>
-            <div class="meta-row">
-              <span class="meta-label">状态</span>
-              <StatusTag :status="status" />
+          <div class="right-body">
+            <div v-if="!recentSessions.length" class="empty-hint">
+              该 Agent 还没有会话，发送第一条消息即可创建。
             </div>
-            <div class="meta-row">
-              <span class="meta-label">{{ execution.workflow_id ? 'Workflow' : 'Agent' }}</span>
-              <span class="meta-value">
-                <template v-if="execution.workflow_id">
-                  Workflow 执行
-                  <span v-if="execution.agent_id" class="muted">
-                    · {{ agentName(execution.agent_id) }} · v{{ execution.agent_version }}
-                  </span>
-                </template>
-                <template v-else>
-                  {{ agentName(execution.agent_id) }} · v{{ execution.agent_version }}
-                </template>
+            <button
+              v-for="session in recentSessions"
+              :key="session.id"
+              type="button"
+              class="recent-session"
+              :class="{ active: session.id === selectedConversationId }"
+              @click="selectConversation(session)"
+            >
+              <span class="recent-title">{{ session.title || '未命名会话' }}</span>
+              <span class="recent-meta">
+                <span class="recent-root">{{ rootLabel(session.root_id) }}</span>
+                <span>{{ formatDate(session.updated_at) }}</span>
               </span>
-            </div>
-            <div v-if="execution.workflow_id" class="meta-row">
-              <span class="meta-label">Workflow ID</span>
-              <span class="meta-value mono">{{ shortId(execution.workflow_id, 12) }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">执行 ID</span>
-              <span class="meta-value mono">{{ shortId(execution.id, 12) }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">Trace</span>
-              <span class="meta-value mono">{{ shortId(execution.trace_id, 14) }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">事件数</span>
-              <span class="meta-value">{{ eventCount }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">知识引用</span>
-              <span class="meta-value">{{ knowledgeCitations.length }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="meta-label">Tokens</span>
-              <span class="meta-value">{{ tokenTotal(usage).toLocaleString('zh-CN') }}</span>
-            </div>
-            <div class="token-breakdown">
-              <span>输入 {{ usage.prompt_tokens || 0 }}</span>
-              <span>输出 {{ usage.completion_tokens || 0 }}</span>
-            </div>
-
-            <div class="section-label">
-              审批
-              <span class="muted">{{ liveApprovals.length }}</span>
-            </div>
-            <div v-if="!liveApprovals.length" class="empty-hint small">暂无审批请求</div>
-            <div v-for="approval in liveApprovals" :key="approval.id" class="approval-item">
-              <div class="approval-top">
-                <span class="approval-name">{{ approval.toolName }}</span>
-                <el-tag
-                  size="small"
-                  :type="
-                    approval.status === 'approved'
-                      ? 'success'
-                      : approval.status === 'rejected'
-                        ? 'danger'
-                        : 'warning'
-                  "
-                >
-                  {{ approvalLabel(approval.status) }}
-                </el-tag>
-              </div>
-              <div class="approval-comment">
-                {{ approval.comment || (approval.status === 'pending' ? '等待人工决策' : '无备注') }}
-              </div>
-            </div>
-
-            <div class="live-actions">
-              <el-button size="small" type="primary" plain @click="openDetail">
-                查看执行详情
-              </el-button>
-              <el-button
-                v-if="streamError && isActive"
-                size="small"
-                @click="reconnectStream"
-              >
-                <el-icon><Refresh /></el-icon>
-                重新连接
-              </el-button>
-            </div>
-          </template>
-        </div>
+            </button>
+          </div>
+        </template>
       </aside>
     </div>
 
@@ -1171,28 +1403,41 @@ onMounted(async () => {
   flex-wrap: wrap;
 }
 
-.agent-picker {
+.agent-head {
   display: flex;
   align-items: center;
   gap: 12px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
-.agent-select {
-  width: 220px;
+.back-link {
   flex: 0 0 auto;
 }
 
-.option-version {
-  float: right;
-  color: var(--app-muted);
+.agent-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.agent-name {
+  font-size: 14px;
+  font-weight: 660;
+  white-space: nowrap;
+}
+
+.agent-version {
   font-size: 11px;
+  color: var(--app-muted);
 }
 
 .agent-desc {
   font-size: 11.5px;
   color: var(--app-muted);
-  max-width: 320px;
+  max-width: 360px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1380,6 +1625,47 @@ onMounted(async () => {
   margin-top: 4px;
 }
 
+.file-roots-wrap {
+  min-height: 48px;
+}
+
+.task-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--app-border);
+  border-radius: 9px;
+  background: var(--app-surface);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.12s ease;
+}
+
+.task-item:hover,
+.task-item.active {
+  border-color: rgba(47, 107, 255, 0.4);
+  background: rgba(47, 107, 255, 0.04);
+}
+
+.task-goal {
+  font-size: 12px;
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+}
+
 .state-dot {
   width: 7px;
   height: 7px;
@@ -1430,12 +1716,251 @@ onMounted(async () => {
     min-height: 600px;
   }
 
-  .agent-select {
-    width: 100%;
+  .agent-head {
+    flex-wrap: wrap;
   }
 
-  .agent-picker {
-    flex-wrap: wrap;
+  .agent-desc {
+    max-width: 100%;
+    white-space: normal;
+  }
+}
+
+/* Immersive workspace layout */
+.workspace-page {
+  height: 100vh;
+  min-height: 0;
+  gap: 0;
+  background: var(--app-bg);
+  overflow: hidden;
+}
+
+.immersive-bar {
+  height: 54px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  background: var(--app-surface);
+  border-bottom: 1px solid var(--app-border);
+}
+
+.exit-btn {
+  flex: none;
+  font-size: 12.5px;
+  color: var(--app-muted);
+}
+
+.immersive-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.immersive-identity .agent-name {
+  font-size: 15px;
+  font-weight: 680;
+  letter-spacing: -0.2px;
+  white-space: nowrap;
+}
+
+.workspace-chip {
+  max-width: 240px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(47, 107, 255, 0.09);
+  color: #2f6bff;
+  font-size: 11.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.immersive-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.workspace {
+  height: calc(100vh - 54px);
+  min-height: 0;
+  grid-template-columns: 280px minmax(0, 1fr) 360px;
+  gap: 12px;
+  padding: 12px;
+}
+
+.workspace-left,
+.workspace-right {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 14px;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 1px 2px rgba(23, 32, 51, 0.03);
+}
+
+.workspace-left {
+  overflow-y: auto;
+}
+
+.side-error {
+  padding: 8px 14px 12px;
+  color: var(--el-color-danger);
+  font-size: 11.5px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.chat-title {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.session-title {
+  font-size: 14px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-sub {
+  font-size: 11px;
+  color: var(--app-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.right-head {
+  flex: none;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--app-border);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.right-title {
+  font-size: 13px;
+  font-weight: 660;
+}
+
+.right-sub {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--app-muted);
+}
+
+.right-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.recent-session {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  padding: 10px 11px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.recent-session:hover {
+  background: rgba(47, 107, 255, 0.05);
+}
+
+.recent-session.active {
+  background: rgba(47, 107, 255, 0.09);
+  border-color: rgba(47, 107, 255, 0.24);
+}
+
+.recent-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--app-muted);
+}
+
+.recent-root {
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1320px) {
+  .workspace {
+    grid-template-columns: 250px minmax(0, 1fr) 310px;
+  }
+}
+
+@media (max-width: 1180px) {
+  .workspace {
+    grid-template-columns: 230px minmax(0, 1fr);
+    height: calc(100vh - 54px);
+  }
+
+  .workspace-right {
+    display: none;
+  }
+}
+
+@media (max-width: 780px) {
+  .workspace {
+    grid-template-columns: 1fr;
+    height: auto;
+    overflow-y: auto;
+  }
+
+  .workspace-left {
+    max-height: 300px;
+  }
+
+  .chat-pane {
+    min-height: 560px;
+  }
+
+  .immersive-identity .agent-name {
+    font-size: 13px;
+  }
+
+  .workspace-chip {
+    max-width: 120px;
   }
 }
 </style>

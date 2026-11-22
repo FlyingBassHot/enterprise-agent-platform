@@ -165,6 +165,64 @@ export interface AgentInfo {
   updated_at: string
 }
 
+export interface WorkspaceAgentInfo {
+  id: string
+  name: string
+  description: string
+  status: string
+  current_version: number | null
+  published_at: string | null
+}
+
+export type FileRootPermission = 'read' | 'write'
+
+export interface FileRootInfo {
+  id: string
+  name: string
+  description: string
+  owner_id: string
+  created_at: string
+  updated_at: string
+}
+
+export interface FileRootAccess {
+  id: string
+  name: string
+  description: string
+  permission: FileRootPermission
+}
+
+export interface FileRootEntry {
+  name: string
+  path: string
+  type: 'file' | 'directory'
+  size: number
+  modified_at: string | null
+}
+
+export interface FileRootGrant {
+  id: string
+  agent_id: string
+  root_id: string
+  permission: FileRootPermission
+  agent_name: string
+  created_at: string
+  updated_at: string
+}
+
+export interface TaskInfo {
+  id: string
+  agent_id: string
+  user_id: string
+  conversation_id: string | null
+  goal: string
+  constraints: Record<string, unknown>
+  success_criteria: unknown[]
+  status: string
+  created_at: string
+  updated_at: string
+}
+
 export interface AgentVersion {
   id: string
   agent_id: string
@@ -222,6 +280,7 @@ export interface ConversationInfo {
   id: string
   agent_id: string
   user_id: string
+  root_id: string | null
   title: string
   created_at: string
   updated_at: string

@@ -117,6 +117,10 @@ function goEdit(agent: AgentInfo) {
   void router.push(`/agents/${agent.id}/edit`)
 }
 
+function goWorkspace(agent: AgentInfo) {
+  void router.push(`/workspaces/${agent.id}`)
+}
+
 async function validateAgent(agent: AgentInfo) {
   validatingId.value = agent.id
   try {
@@ -278,9 +282,17 @@ onMounted(load)
         <el-table-column label="更新时间" width="168">
           <template #default="{ row }">{{ formatDate(row.updated_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="248" fixed="right">
+        <el-table-column label="操作" width="330" fixed="right">
           <template #default="{ row }">
             <div class="row-actions">
+              <el-button
+                v-if="auth.has('executions:write') && row.status === 'published'"
+                link
+                type="primary"
+                @click="goWorkspace(row)"
+              >
+                进入工作区
+              </el-button>
               <el-button v-if="canWrite" link type="primary" @click="goEdit(row)">编辑</el-button>
               <el-button
                 link

@@ -27,10 +27,20 @@ class ExecutionRepository:
     # ------------------------------------------------------------ conversations
 
     async def create_conversation(
-        self, *, agent_id: str, user_id: str, title: str = "", conversation_id: str | None = None
+        self,
+        *,
+        agent_id: str,
+        user_id: str,
+        root_id: str | None = None,
+        title: str = "",
+        conversation_id: str | None = None,
     ) -> Conversation:
         row = Conversation(
-            id=conversation_id or new_id(), agent_id=agent_id, user_id=user_id, title=title
+            id=conversation_id or new_id(),
+            agent_id=agent_id,
+            user_id=user_id,
+            root_id=root_id,
+            title=title,
         )
         self.db.add(row)
         await self.db.flush()
@@ -297,12 +307,15 @@ class ExecutionRepository:
         self,
         *,
         user_id: str | None = None,
+        agent_id: str | None = None,
         conversation_id: str | None = None,
         limit: int = 100,
     ) -> list[AgentTask]:
         stmt = select(AgentTask)
         if user_id:
             stmt = stmt.where(AgentTask.user_id == user_id)
+        if agent_id:
+            stmt = stmt.where(AgentTask.agent_id == agent_id)
         if conversation_id:
             stmt = stmt.where(AgentTask.conversation_id == conversation_id)
         stmt = stmt.order_by(AgentTask.created_at.desc()).limit(limit)

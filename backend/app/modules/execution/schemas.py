@@ -17,6 +17,7 @@ class _ORMModel(BaseModel):
 
 class ConversationCreate(BaseModel):
     agent_id: str
+    root_id: str | None = None
     title: str = ""
 
 
@@ -24,6 +25,7 @@ class ConversationOut(_ORMModel):
     id: str
     agent_id: str
     user_id: str
+    root_id: str | None = None
     title: str
     created_at: datetime
     updated_at: datetime
@@ -79,6 +81,7 @@ class TaskDetailOut(TaskOut):
 class ExecutionCreate(BaseModel):
     agent_id: str | None = None
     workflow_id: str | None = None
+    root_id: str | None = None
     input: str = ""
     conversation_id: str | None = None
     # Continue an existing task instead of creating a fresh one.

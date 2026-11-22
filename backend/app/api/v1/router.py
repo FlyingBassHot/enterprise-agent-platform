@@ -16,6 +16,8 @@ from app.modules.skill.router import router as skill_router
 from app.modules.tool.router import mcp_router
 from app.modules.tool.router import router as tool_router
 from app.modules.workflow.router import router as workflow_router
+from app.modules.workspace.router import file_roots_router
+from app.modules.workspace.router import router as workspace_router
 
 api_router = APIRouter()
 api_router.include_router(auth_router)
@@ -33,5 +35,7 @@ api_router.include_router(dashboard_router)
 api_router.include_router(audit_log_router)
 api_router.include_router(workflow_router)
 api_router.include_router(workflow_execute_router)
+api_router.include_router(workspace_router)
+api_router.include_router(file_roots_router)
 
 __all__ = ["api_router"]

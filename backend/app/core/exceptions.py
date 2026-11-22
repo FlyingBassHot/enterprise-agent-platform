@@ -87,6 +87,22 @@ def _payload(request: Request, code: str, message: str, details: Any = None) -> 
     return ErrorBody(code=code, message=message, details=details).model_dump()
 
 
+def _serializable_errors(errors: Any) -> list[dict[str, Any]]:
+    """Pydantic embeds the original exception in ``ctx``; JSON cannot encode it."""
+
+    cleaned: list[dict[str, Any]] = []
+    for item in errors or []:
+        entry = dict(item) if isinstance(item, dict) else {"message": str(item)}
+        context = entry.get("ctx")
+        if isinstance(context, dict):
+            entry["ctx"] = {
+                key: str(value) if isinstance(value, BaseException) else value
+                for key, value in context.items()
+            }
+        cleaned.append(entry)
+    return cleaned
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app_error(request: Request, exc: AppError) -> JSONResponse:
@@ -99,7 +115,12 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
         return JSONResponse(
             status_code=422,
-            content=_payload(request, "validation_error", "Request validation failed", exc.errors()),
+            content=_payload(
+                request,
+                "validation_error",
+                "Request validation failed",
+                _serializable_errors(exc.errors()),
+            ),
         )
 
     @app.exception_handler(StarletteHTTPException)

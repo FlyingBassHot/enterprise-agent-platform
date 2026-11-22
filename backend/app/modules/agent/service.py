@@ -221,6 +221,55 @@ class AgentService:
             raise ConflictError("Published agent version is missing")
         return AgentSnapshot.model_validate(version.snapshot)
 
+    # ----------------------------------------------------------------- workspace
+
+    @staticmethod
+    def require_snapshot_access(actor: UserContext, snapshot: AgentSnapshot) -> None:
+        """Enforce the permissions / roles captured in the published snapshot."""
+
+        if snapshot.required_permissions:
+            missing = [code for code in snapshot.required_permissions if not actor.has(code)]
+            if missing:
+                raise PermissionDeniedError(
+                    f"Missing agent required permission: {', '.join(missing)}"
+                )
+        if snapshot.allowed_roles and not actor.is_superuser:
+            if not set(snapshot.allowed_roles).intersection(actor.roles):
+                raise PermissionDeniedError("Your role is not allowed to use this agent")
+
+    async def _published_snapshot(self, agent: Agent) -> AgentSnapshot | None:
+        if agent.status != "published" or not agent.current_version_id:
+            return None
+        version = await self.repo.get_version(agent.current_version_id)
+        if version is None or version.agent_id != agent.id:
+            return None
+        return AgentSnapshot.model_validate(version.snapshot)
+
+    async def list_usable(self, actor: UserContext) -> list[tuple[Agent, AgentSnapshot]]:
+        """Published agents whose snapshot permissions the actor satisfies."""
+
+        usable: list[tuple[Agent, AgentSnapshot]] = []
+        for agent in await self.repo.list_agents():
+            snapshot = await self._published_snapshot(agent)
+            if snapshot is None:
+                continue
+            try:
+                self.require_snapshot_access(actor, snapshot)
+            except PermissionDeniedError:
+                continue
+            usable.append((agent, snapshot))
+        return usable
+
+    async def load_usable_agent(
+        self, agent_id: str, actor: UserContext
+    ) -> tuple[Agent, AgentSnapshot]:
+        agent = await self._get_agent_or_404(agent_id)
+        snapshot = await self._published_snapshot(agent)
+        if snapshot is None:
+            raise NotFoundError("Agent is not published or has no current version")
+        self.require_snapshot_access(actor, snapshot)
+        return agent, snapshot
+
     # -------------------------------------------------------------------- helpers
 
     async def _collect_validation(

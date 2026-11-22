@@ -40,6 +40,12 @@ const router = createRouter({
           meta: { title: '编辑 Agent', permission: 'agents:write' },
         },
         {
+          path: 'settings/file-roots',
+          name: 'file-roots',
+          component: () => import('@/views/settings/FileRootsView.vue'),
+          meta: { title: '文件根目录', permission: 'agents:write' },
+        },
+        {
           path: 'knowledge',
           name: 'knowledge',
           component: () => import('@/views/knowledge/KnowledgeView.vue'),
@@ -76,10 +82,14 @@ const router = createRouter({
           meta: { title: '工具管理', permission: 'tools:read' },
         },
         {
+          path: 'workspaces',
+          name: 'workspaces',
+          component: () => import('@/views/chat/WorkspaceSelectView.vue'),
+          meta: { title: 'Agent 工作中心', permission: 'executions:write' },
+        },
+        {
           path: 'workspace',
-          name: 'workspace',
-          component: () => import('@/views/chat/WorkspaceView.vue'),
-          meta: { title: 'Agent 工作台', permission: 'executions:write' },
+          redirect: '/workspaces',
         },
         {
           path: 'executions',
@@ -112,6 +122,18 @@ const router = createRouter({
           meta: { title: '审计演示', permission: 'audit:read' },
         },
       ],
+    },
+    {
+      path: '/workspaces/:agentId',
+      name: 'workspace',
+      component: () => import('@/views/chat/WorkspaceView.vue'),
+      meta: { title: 'Agent 工作台', permission: 'executions:write', immersive: true },
+    },
+    {
+      path: '/workspaces/:agentId/chat/:sessionId',
+      name: 'workspace-chat',
+      component: () => import('@/views/chat/WorkspaceView.vue'),
+      meta: { title: 'Agent 工作台', permission: 'executions:write', immersive: true },
     },
     {
       path: '/:pathMatch(.*)*',

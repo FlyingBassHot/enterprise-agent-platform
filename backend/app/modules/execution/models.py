@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -25,9 +26,15 @@ def _utcnow() -> datetime:
 
 class Conversation(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "conversations"
+    __table_args__ = (
+        Index("ix_conversations_agent_root", "agent_id", "root_id"),
+    )
 
     agent_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    root_id: Mapped[str | None] = mapped_column(
+        ForeignKey("file_roots.id", ondelete="SET NULL"), index=True, nullable=True
+    )
     title: Mapped[str] = mapped_column(String(255), default="", nullable=False)
 
 

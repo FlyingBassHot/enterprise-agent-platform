@@ -26,8 +26,14 @@ const route = useRoute()
 
 const menuItems = computed(() => [
   { path: '/dashboard', label: '仪表盘', icon: Grid, permission: 'dashboard:read' },
-  { path: '/workspace', label: 'Agent 工作台', icon: ChatDotRound, permission: 'executions:write' },
+  { path: '/workspaces', label: 'Agent 工作台', icon: ChatDotRound, permission: 'executions:write' },
   { path: '/agents', label: 'Agent 管理', icon: Cpu, permission: 'agents:read' },
+  {
+    path: '/settings/file-roots',
+    label: '文件根目录',
+    icon: FolderOpened,
+    permission: 'agents:write',
+  },
   { path: '/knowledge', label: '知识库', icon: FolderOpened, permission: 'knowledge:read' },
   { path: '/skills', label: 'Skill 管理', icon: Reading, permission: 'skills:read' },
   { path: '/workflows', label: '工作流', icon: Share, permission: 'workflows:read' },
@@ -42,7 +48,9 @@ const menuItems = computed(() => [
 
 const activeMenu = computed(() => {
   const path = route.path
+  if (path.startsWith('/settings/file-roots')) return '/settings/file-roots'
   if (path.startsWith('/agents')) return '/agents'
+  if (path.startsWith('/workspaces')) return '/workspaces'
   if (path.startsWith('/executions')) return '/executions'
   return path
 })

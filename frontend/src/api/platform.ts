@@ -40,6 +40,13 @@ import type {
   WorkflowVersionInfo,
   ToolCallRecord,
   UserInfo,
+  WorkspaceAgentInfo,
+  FileRootAccess,
+  FileRootEntry,
+  FileRootGrant,
+  FileRootInfo,
+  FileRootPermission,
+  TaskInfo,
 } from '@/types/api'
 
 export const agentsApi = {
@@ -132,6 +139,7 @@ export const executionsApi = {
   create: (payload: {
     agent_id?: string
     workflow_id?: string
+    root_id?: string | null
     input: string
     conversation_id?: string | null
     artifact_ids?: string[]
@@ -195,6 +203,82 @@ export const conversationsApi = {
   get: (id: string) => client.get<ConversationInfo>(`/conversations/${id}`).then((r) => r.data),
   messages: (id: string) =>
     client.get<MessageInfo[]>(`/conversations/${id}/messages`).then((r) => r.data),
+}
+
+export const workspaceApi = {
+  agents: () => client.get<WorkspaceAgentInfo[]>('/workspaces/agents').then((r) => r.data),
+  conversations: (agentId: string, params?: { limit?: number }) =>
+    client
+      .get<ConversationInfo[]>(`/workspaces/agents/${agentId}/conversations`, { params })
+      .then((r) => r.data),
+  createConversation: (
+    agentId: string,
+    payload: { title?: string; root_id?: string | null } = {},
+  ) =>
+    client
+      .post<ConversationInfo>(`/workspaces/agents/${agentId}/conversations`, payload)
+      .then((r) => r.data),
+  conversation: (agentId: string, conversationId: string) =>
+    client
+      .get<ConversationInfo>(`/workspaces/agents/${agentId}/conversations/${conversationId}`)
+      .then((r) => r.data),
+  messages: (agentId: string, conversationId: string) =>
+    client
+      .get<MessageInfo[]>(
+        `/workspaces/agents/${agentId}/conversations/${conversationId}/messages`,
+      )
+      .then((r) => r.data),
+  fileRoots: (agentId: string) =>
+    client
+      .get<FileRootAccess[]>(`/workspaces/agents/${agentId}/file-roots`)
+      .then((r) => r.data),
+  entries: (agentId: string, rootId: string, path = '') =>
+    client
+      .get<FileRootEntry[]>(`/workspaces/agents/${agentId}/file-roots/${rootId}/entries`, {
+        params: { path },
+      })
+      .then((r) => r.data),
+  downloadFile: (agentId: string, rootId: string, path: string) =>
+    client
+      .get<Blob>(`/workspaces/agents/${agentId}/file-roots/${rootId}/content`, {
+        params: { path },
+        responseType: 'blob',
+      })
+      .then((r) => r.data),
+  uploadFile: (agentId: string, rootId: string, path: string, file: File) => {
+    const form = new FormData()
+    form.append('path', path)
+    form.append('file', file)
+    return client
+      .post<FileRootEntry>(`/workspaces/agents/${agentId}/file-roots/${rootId}/files`, form)
+      .then((r) => r.data)
+  },
+  deleteFile: (agentId: string, rootId: string, path: string) =>
+    client
+      .delete(`/workspaces/agents/${agentId}/file-roots/${rootId}/files`, {
+        params: { path },
+      })
+      .then((r) => r.data),
+  executions: (agentId: string, params?: { limit?: number; offset?: number }) =>
+    client
+      .get<ExecutionInfo[]>(`/workspaces/agents/${agentId}/executions`, { params })
+      .then((r) => r.data),
+  tasks: (agentId: string, params?: { limit?: number }) =>
+    client
+      .get<TaskInfo[]>(`/workspaces/agents/${agentId}/tasks`, { params })
+      .then((r) => r.data),
+}
+
+export const fileRootsApi = {
+  list: () => client.get<FileRootInfo[]>('/file-roots').then((r) => r.data),
+  create: (payload: { name: string; description?: string }) =>
+    client.post<FileRootInfo>('/file-roots', payload).then((r) => r.data),
+  grants: (rootId: string) =>
+    client.get<FileRootGrant[]>(`/file-roots/${rootId}/permissions`).then((r) => r.data),
+  grant: (rootId: string, payload: { agent_id: string; permission: FileRootPermission }) =>
+    client.post<FileRootGrant>(`/file-roots/${rootId}/permissions`, payload).then((r) => r.data),
+  revoke: (rootId: string, agentId: string) =>
+    client.delete(`/file-roots/${rootId}/permissions/${agentId}`),
 }
 
 export const approvalsApi = {

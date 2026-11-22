@@ -120,11 +120,13 @@ class TaskService:
         actor: UserContext,
         *,
         conversation_id: str | None = None,
+        agent_id: str | None = None,
         limit: int = 100,
     ) -> list[TaskOut]:
         self._require(actor, "executions:read")
         rows = await self.repo.list_tasks(
             user_id=None if actor.is_superuser else actor.user_id,
+            agent_id=agent_id,
             conversation_id=conversation_id,
             limit=limit,
         )

@@ -37,10 +37,12 @@ from app.modules.tool.models import (
     ToolVersion,
 )
 from app.modules.workflow.models import Workflow, WorkflowExecution, WorkflowVersion
+from app.modules.workspace.models import AgentFileRoot, FileRoot
 
 __all__ = [
     "Agent",
     "AgentExecution",
+    "AgentFileRoot",
     "AgentVersion",
     "ApprovalRequest",
     "AuditLog",
@@ -51,6 +53,7 @@ __all__ = [
     "DocumentVersion",
     "EmbeddingRecord",
     "ExecutionEvent",
+    "FileRoot",
     "KnowledgeBase",
     "MCPServer",
     "LLMCall",

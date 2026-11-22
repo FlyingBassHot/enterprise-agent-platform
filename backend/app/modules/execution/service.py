@@ -178,15 +178,68 @@ class ExecutionService:
             if not set(snapshot.allowed_roles).intersection(actor.roles):
                 raise PermissionDeniedError("Your role is not allowed to run this agent")
 
+    async def _require_target_access(
+        self, actor: UserContext, execution: AgentExecution
+    ) -> None:
+        """Revalidate the current Agent/Workflow policy before resuming a run."""
+
+        if execution.workflow_id:
+            from app.modules.workflow.service import WorkflowService
+
+            snapshot = await WorkflowService(self.db).load_published(execution.workflow_id)
+            if not actor.is_superuser and snapshot.owner_id != actor.user_id:
+                await PermissionService(self.db).require_resource_access(
+                    actor,
+                    resource_type="workflow",
+                    resource_id=snapshot.workflow_id,
+                    action="read",
+                    owner_id=snapshot.owner_id,
+                )
+            return
+        if not execution.agent_id:
+            raise ValidationError("Execution has no agent or workflow target")
+        loader = self._agent_loader or _agent_service(self.db)
+        snapshot = await loader.load_published(execution.agent_id)
+        self._check_agent_access(actor, snapshot)
+
     # -------------------------------------------------------------- conversations
 
     async def create_conversation(
         self, actor: UserContext, payload: ConversationCreate
     ) -> ConversationOut:
         self._require(actor, "executions:write")
+        agent_id = payload.agent_id
+        if agent_id.startswith("workflow:"):
+            from app.modules.workflow.service import WorkflowService
+
+            workflow_id = agent_id.split(":", 1)[1]
+            snapshot = await WorkflowService(self.db).load_published(workflow_id)
+            if not actor.is_superuser and snapshot.owner_id != actor.user_id:
+                await PermissionService(self.db).require_resource_access(
+                    actor,
+                    resource_type="workflow",
+                    resource_id=snapshot.workflow_id,
+                    action="read",
+                    owner_id=snapshot.owner_id,
+                )
+            agent_id = f"workflow:{snapshot.workflow_id}"
+        else:
+            from app.modules.agent.service import AgentService
+
+            agent, _ = await AgentService(self.db).load_usable_agent(agent_id, actor)
+            agent_id = agent.id
+        if payload.root_id:
+            if agent_id.startswith("workflow:"):
+                raise ValidationError("root_id is only valid for agent conversations")
+            from app.modules.workspace.service import WorkspaceService
+
+            await WorkspaceService(self.db).require_agent_root(
+                actor, agent_id, payload.root_id
+            )
         conversation = await self.repo.create_conversation(
-            agent_id=payload.agent_id,
+            agent_id=agent_id,
             user_id=actor.user_id,
+            root_id=payload.root_id or None,
             title=payload.title.strip() or "新对话",
         )
         await self.db.commit()
@@ -228,6 +281,7 @@ class ExecutionService:
         agent_id: str,
         agent_name: str,
         payload: ExecutionCreate,
+        root_id: str | None = None,
     ):
         if payload.conversation_id:
             conversation = await self.repo.get_conversation(payload.conversation_id)
@@ -237,10 +291,15 @@ class ExecutionService:
                 raise PermissionDeniedError("Conversation belongs to another user")
             if conversation.agent_id != agent_id:
                 raise ConflictError("Conversation belongs to a different agent/workflow")
+            if root_id and conversation.root_id != root_id:
+                raise ConflictError("Conversation belongs to a different workspace")
             return conversation
         title = (payload.input or agent_name or "新对话").strip().splitlines()[0][:120]
         return await self.repo.create_conversation(
-            agent_id=agent_id, user_id=actor.user_id, title=title or "新对话"
+            agent_id=agent_id,
+            user_id=actor.user_id,
+            root_id=root_id,
+            title=title or "新对话",
         )
 
     # ------------------------------------------------------------------ artifacts
@@ -274,6 +333,8 @@ class ExecutionService:
         self, actor: UserContext, payload: ExecutionCreate
     ) -> ExecutionOut:
         self._require(actor, "executions:write")
+        if not payload.agent_id and not payload.workflow_id:
+            raise ValidationError("agent_id or workflow_id is required")
         from app.modules.workflow.service import WorkflowService
 
         snapshot: AgentSnapshot | None = None
@@ -323,12 +384,24 @@ class ExecutionService:
             agent_version = 0
             mode = "workflow"
 
+        if payload.root_id:
+            if not agent_id:
+                raise ValidationError("root_id is only valid for agent executions")
+            from app.modules.workspace.service import WorkspaceService
+
+            await WorkspaceService(self.db).require_agent_root(
+                actor, agent_id, payload.root_id
+            )
+
         tasks = TaskService(self.db)
         task = None
         if payload.task_id:
             task = await tasks.resolve_for_execution(
                 actor, payload.task_id, payload.conversation_id
             )
+            expected_task_agent = agent_id or conversation_agent_id
+            if task.agent_id != expected_task_agent:
+                raise ConflictError("Task belongs to a different agent/workflow")
             if not payload.conversation_id and task.conversation_id:
                 # Continuing a task stays in its conversation unless the caller
                 # explicitly names another one.
@@ -336,7 +409,11 @@ class ExecutionService:
                     update={"conversation_id": task.conversation_id}
                 )
         conversation = await self._resolve_conversation(
-            actor, conversation_agent_id, conversation_title, payload
+            actor,
+            conversation_agent_id,
+            conversation_title,
+            payload,
+            root_id=payload.root_id or None,
         )
         if task is None:
             task = await tasks.ensure_task(
@@ -373,6 +450,7 @@ class ExecutionService:
                 "attachments": attachments,
                 "variables": payload.variables,
                 "metadata": payload.metadata,
+                "root_id": payload.root_id or None,
                 "workflow_id": workflow_snapshot.workflow_id if workflow_snapshot else None,
             },
             trace_id=trace_id,
@@ -513,6 +591,9 @@ class ExecutionService:
         }:
             raise ConflictError(f"Cannot resume an execution in status {execution.status}")
 
+        owner = await self._owner_context(execution.user_id, fallback=actor)
+        await self._require_target_access(owner, execution)
+
         pending = await self.repo.list_pending_approvals(execution_id)
         if pending:
             raise ConflictError("Resolve all pending approvals before resuming")
@@ -547,7 +628,6 @@ class ExecutionService:
             execution.started_at = _now()
         await self.db.commit()
 
-        owner = await self._owner_context(execution.user_id, fallback=actor)
         self._schedule(
             execution_id,
             owner,
@@ -610,6 +690,10 @@ class ExecutionService:
                 owner_id=execution.user_id,
             )
 
+        owner = await self._owner_context(execution.user_id, fallback=actor)
+        if execution.status == ExecutionStatus.WAITING_APPROVAL.value:
+            await self._require_target_access(owner, execution)
+
         resolved_at = _now()
         status = "approved" if approved else "rejected"
         result = await self.db.execute(
@@ -638,7 +722,6 @@ class ExecutionService:
         sink = ExecutionEventSink(self.session_factory, execution.id, broker=self.broker)
         interrupt_id = (approval.payload or {}).get("interrupt_id")
         if not remaining and execution.status == ExecutionStatus.WAITING_APPROVAL.value:
-            owner = await self._owner_context(execution.user_id, fallback=actor)
             self._schedule(
                 execution.id,
                 owner,

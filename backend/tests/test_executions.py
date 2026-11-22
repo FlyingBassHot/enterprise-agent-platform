@@ -13,6 +13,7 @@ from app.main import app
 from app.modules.execution.router import get_execution_service
 from app.modules.execution.service import _TASKS, ExecutionService
 from app.modules.runtime.checkpoint import close_checkpointer
+from tests.test_agents import create_agent, create_model_config, create_prompt
 from tests.test_runtime import (
     FakeLoader,
     FakeModel,
@@ -22,6 +23,17 @@ from tests.test_runtime import (
 )
 
 API = "/api/v1"
+
+
+async def published_agent_id(client: AsyncClient, admin: dict[str, str]) -> str:
+    config_id = await create_model_config(client, admin)
+    bundle = await create_prompt(client, admin)
+    agent = await create_agent(
+        client, admin, config_id=config_id, prompt_id=bundle["prompt"]["id"]
+    )
+    published = await client.post(f"{API}/agents/{agent['id']}/publish", headers=admin)
+    assert published.status_code == 200, published.text
+    return agent["id"]
 
 
 @pytest.fixture(autouse=True)
@@ -236,10 +248,11 @@ async def test_conversation_endpoints(
     client: AsyncClient, admin: dict[str, str], install_runtime
 ) -> None:
     install_runtime()
+    agent_id = await published_agent_id(client, admin)
     created = await client.post(
         f"{API}/conversations",
         headers=admin,
-        json={"agent_id": "agent-1", "title": "Audit chat"},
+        json={"agent_id": agent_id, "title": "Audit chat"},
     )
     assert created.status_code == 201, created.text
     conversation = created.json()
@@ -335,10 +348,11 @@ async def test_conversation_messages_return_newest_window(
 ) -> None:
     from app.modules.execution.repository import ExecutionRepository
 
+    agent_id = await published_agent_id(client, admin)
     created = await client.post(
         "/api/v1/conversations",
         headers=admin,
-        json={"agent_id": "history-agent", "title": "history"},
+        json={"agent_id": agent_id, "title": "history"},
     )
     assert created.status_code in (200, 201), created.text
     conversation_id = created.json()["id"]
